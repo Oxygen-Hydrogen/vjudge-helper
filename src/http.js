@@ -14,6 +14,39 @@ const DEFAULT_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
   '(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
 
+/**
+ * 每个请求单独握手，**不复用 socket**。
+ *
+ * Node 19 起 `https.globalAgent` 默认 keepAlive=true，连接会被池化复用；
+ * VJudge 前面挂着 Cloudflare / 多台前置机，池子里的空闲连接早就被对面单方面掐了，
+ * 复用时就会报 "Client network socket disconnected before secure TLS connection was established"
+ * （err.code = ECONNRESET）——这在「随机一道题」这种低频点击里特别容易踩到。
+ * 关掉 keep-alive 多花一次 TLS 握手（约 100ms），换来的是不再随机失败。
+ */
+const httpsAgent = new https.Agent({ keepAlive: false });
+const httpAgent = new http.Agent({ keepAlive: false });
+
+/** 这些错误都是「连接层面抖了一下」，重试基本就能过 */
+const RETRYABLE_CODE = new Set([
+  'ECONNRESET',
+  'EPIPE',
+  'ETIMEDOUT',
+  'EAI_AGAIN',
+  'ECONNABORTED',
+  'EPROTO',
+  'ERR_SSL_WRONG_VERSION_NUMBER',
+]);
+
+function isRetryable(err) {
+  if (!err) return false;
+  const code = String(err.code || '');
+  if (RETRYABLE_CODE.has(code)) return true;
+  const message = String(err.message || '');
+  return /socket hang up|network socket disconnected|before secure TLS connection|Client network socket|ECONNRESET|ETIMEDOUT|EAI_AGAIN|请求超时/i.test(
+    message
+  );
+}
+
 class CookieJar {
   constructor(initial) {
     /** @type {Map<string, string>} */
@@ -112,7 +145,7 @@ function request(rawUrl, options = {}) {
     jar,
     timeout = 20000,
     maxRedirects = 5,
-    retries = 1,
+    retries = 2,
   } = options;
 
   const attempt = (url, redirectsLeft, triesLeft) =>
@@ -149,6 +182,7 @@ function request(rawUrl, options = {}) {
           method,
           headers: finalHeaders,
           timeout,
+          agent: isHttps ? httpsAgent : httpAgent,
         },
         (res) => {
           if (jar) jar.absorb(res.headers['set-cookie']);
@@ -190,8 +224,21 @@ function request(rawUrl, options = {}) {
         req.destroy(new Error(`请求超时（${timeout}ms）: ${url}`));
       });
       req.on('error', (err) => {
-        if (triesLeft > 0 && /socket hang up|ECONNRESET|ETIMEDOUT|EAI_AGAIN/i.test(String(err.message))) {
-          delay(400).then(() => attempt(url, redirectsLeft, triesLeft - 1).then(resolve).catch(reject));
+        if (triesLeft > 0 && isRetryable(err)) {
+          // 逐次退避：400ms、900ms…，给对面 / 代理一点缓冲时间
+          const wait = 400 * Math.pow(1.8, retries - triesLeft);
+          delay(wait)
+            .then(() => attempt(url, redirectsLeft, triesLeft - 1))
+            .then(resolve)
+            .catch(reject);
+        } else if (isRetryable(err)) {
+          // 重试也失败：换个人话讲，别把 Node 的原始报错直接甩给用户
+          reject(
+            new Error(
+              `网络连接被中断（${err.code || 'ECONNRESET'}）：连不上 ${parsed.hostname}。` +
+                '如果你开了代理 / 加速器，确认它允许这几个域名；否则稍后再试。'
+            )
+          );
         } else {
           reject(err);
         }
@@ -211,4 +258,4 @@ function formEncode(obj) {
     .join('&');
 }
 
-module.exports = { request, CookieJar, formEncode, DEFAULT_UA };
+module.exports = { request, CookieJar, formEncode, DEFAULT_UA, isRetryable };

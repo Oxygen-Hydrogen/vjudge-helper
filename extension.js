@@ -7,7 +7,16 @@ const { VJudgeClient } = require('./src/vjudge');
 const { Store } = require('./src/store');
 const { VJudgeTreeProvider } = require('./src/explorer');
 const { showPanel } = require('./src/webview/shell');
-const { renderProblem, renderArticle, renderContest, renderGroup, renderStandingsInner } = require('./src/webview/renderers');
+const {
+  renderProblem,
+  renderArticle,
+  renderContest,
+  renderGroup,
+  renderStandingsInner,
+  renderMessage,
+  renderConversationInner,
+  renderDiscussionPosts,
+} = require('./src/webview/renderers');
 const {
   parseInput,
   problemUrl,
@@ -17,6 +26,7 @@ const {
   escapeHtml,
 } = require('./src/util');
 const submitLib = require('./src/submit');
+const randomLib = require('./src/random');
 const { buildStandings } = require('./src/standings');
 const log = require('./src/log');
 
@@ -40,6 +50,11 @@ let lastOpened = null;
 let currentProblem = null;
 /** 榜单自动刷新 */
 let standingsPoll = null;
+/**
+ * 榜单是否把「赛后补题」算进去。
+ * 只在当前比赛面板有效，换一场比赛时重置（否则上一场的开关会莫名带到下一场）。
+ */
+let standingsIncludePractice = false;
 /** 最近一次提交的记录页，状态栏点击可直达 */
 let lastSolutionUrl = '';
 let judgeHideTimer = null;
@@ -347,11 +362,15 @@ async function pushStandings(contest, panel, options = {}) {
   try {
     const rank = await client.fetchContestRank(contest.id);
     const myId = await client.myUserId().catch(() => '');
-    const standings = buildStandings(contest, rank, { myParticipantId: myId });
+    const standings = buildStandings(contest, rank, {
+      myParticipantId: myId,
+      includePractice: standingsIncludePractice,
+    });
     panel.webview.postMessage({
       type: 'standings',
       html: renderStandingsInner(standings),
       updatedAt: standings.updatedAt,
+      includePractice: standings.includePractice,
     });
     if (!options.quiet) {
       vscode.window.setStatusBarMessage(`榜单已更新 · ${standings.participantCount} 人参赛`, 2500);
@@ -420,25 +439,61 @@ function refreshStandingsSoon(contestId) {
 async function showContest(id, options = {}) {
   const contest = await withProgress(`正在获取比赛 #${id}…`, () => client.fetchContest(id));
 
+  // 换比赛了，补题开关回到「仅赛时」
+  standingsIncludePractice = false;
+
+  const myId = await client.myUserId().catch(() => '');
   let standings = null;
   let standingsError = '';
   try {
     standings = await withProgress('正在读取榜单…', async () => {
-      const [rank, myId] = await Promise.all([
-        client.fetchContestRank(contest.id),
-        client.myUserId().catch(() => ''),
-      ]);
-      return buildStandings(contest, rank, { myParticipantId: myId });
+      const rank = await client.fetchContestRank(contest.id);
+      return buildStandings(contest, rank, { myParticipantId: myId, includePractice: standingsIncludePractice });
     });
   } catch (err) {
     standingsError = err && err.code === 'LOGIN_REQUIRED' ? '榜单需要登录 / 报名后才能查看' : err.message;
   }
 
+  // 讨论区匿名也能读，失败不影响榜单
+  let discussion = null;
+  let discussionError = '';
+  try {
+    discussion = await client.fetchDiscussion(`contest/${contest.id}`);
+  } catch (err) {
+    discussionError = (err && err.message) || '讨论区读取失败';
+  }
+
   const interval = standingsInterval();
-  const view = renderContest(contest, { standings, standingsError, pollInterval: interval });
+  const view = renderContest(contest, {
+    standings,
+    standingsError,
+    pollInterval: interval,
+    includePractice: standingsIncludePractice,
+    discussion,
+    discussionError,
+    myId,
+  });
   lastOpened = { kind: 'contest', key: String(contest.id), id: String(contest.id), title: contest.title, url: contest.url };
 
   let panel = null;
+
+  /** 重新拉一次讨论区，只换帖子列表（发帖框里的草稿不受影响） */
+  const refreshDiscussion = async () => {
+    try {
+      const fresh = await client.fetchDiscussion(`contest/${contest.id}`);
+      if (!panel || !panel.webview) return fresh;
+      panel.webview.postMessage({
+        type: 'discussionPosts',
+        html: renderDiscussionPosts(fresh, { myId }),
+        count: fresh.commentNumber,
+      });
+      return fresh;
+    } catch (err) {
+      panel.webview.postMessage({ type: 'toast', text: `讨论区刷新失败：${err.message}` });
+      return null;
+    }
+  };
+
   panel = showPanel(appContext, 'contest', {
     ...view,
     enableMathJax: false,
@@ -464,6 +519,46 @@ async function showContest(id, options = {}) {
       }
       if (msg.type === 'openContest' && msg.id) return showContest(msg.id).catch(handleError);
       if (msg.type === 'openGroup' && msg.name) return showGroup(msg.name).catch(handleError);
+
+      // 讨论区：发帖 / 删帖（带内容，所以单独走一类消息）
+      if (msg.type === 'discussSend') {
+        const content = String(msg.content || '');
+        if (!content.trim()) {
+          panel.webview.postMessage({ type: 'toast', text: '先写点内容' });
+          return undefined;
+        }
+        return vscode.window.withProgress(
+          { location: vscode.ProgressLocation.Window, title: '正在发表…' },
+          async () => {
+            try {
+              await client.postComment({
+                path: `contest/${contest.id}`,
+                content,
+                parent: Number(msg.parent) || 0,
+              });
+              panel.webview.postMessage({ type: 'discussClear' });
+              await refreshDiscussion();
+              vscode.window.setStatusBarMessage('评论已发表', 2500);
+            } catch (err) {
+              panel.webview.postMessage({ type: 'toast', text: err.message });
+            }
+          }
+        );
+      }
+      if (msg.type === 'discussDelete') {
+        return (async () => {
+          const pick = await vscode.window.showWarningMessage('删除这条评论？删了就找不回来了。', { modal: true }, '删除');
+          if (pick !== '删除') return;
+          try {
+            await client.deleteComment(msg.post);
+            await refreshDiscussion();
+            vscode.window.setStatusBarMessage('已删除', 2000);
+          } catch (err) {
+            panel.webview.postMessage({ type: 'toast', text: err.message });
+          }
+        })();
+      }
+
       if (msg.type !== 'action') return undefined;
       switch (msg.action) {
         case 'browser':
@@ -474,6 +569,24 @@ async function showContest(id, options = {}) {
           });
         case 'rank':
           return openExternal(`${contest.url}#rank`);
+        case 'standingsPractice': {
+          // 赛时榜单 ⇄ 含赛后补题
+          standingsIncludePractice = !standingsIncludePractice;
+          return pushStandings(contest, panel).then((fresh) => {
+            if (fresh) {
+              vscode.window.setStatusBarMessage(
+                standingsIncludePractice ? '榜单已包含赛后补题（标 †）' : '榜单只算赛时成绩',
+                2500
+              );
+            }
+          });
+        }
+        case 'discussRefresh':
+          return refreshDiscussion().then((fresh) => {
+            if (fresh) vscode.window.setStatusBarMessage(`讨论区已刷新 · ${fresh.commentNumber} 条`, 2000);
+          });
+        case 'discussBrowser':
+          return openExternal(`${contest.url}#discuss`);
         case 'rankRefresh':
           return pushStandings(contest, panel).catch(handleError);
         case 'login':
@@ -501,6 +614,150 @@ async function showContest(id, options = {}) {
     title: contest.title,
   });
   treeProvider.refresh();
+}
+
+/* ------------------------------------------------------------------ */
+/* 私信                                                                */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 私信面板。
+ *
+ * 会话列表是服务端渲染的 HTML（只有「会话内容 / 发送 / 删除 / 拉黑」是 AJAX），
+ * 所以整页只在「刷新列表」时重载；切联系人和发消息都只替换右半边。
+ */
+async function showMessages(options = {}) {
+  let book = null;
+  let error = '';
+  try {
+    book = await withProgress('正在读取私信…', () => client.fetchMessageContacts());
+  } catch (err) {
+    error = (err && err.message) || '私信读取失败';
+  }
+
+  const contacts = (book && book.contacts) || [];
+  const me = (book && book.me) || '';
+  const url = (book && book.url) || `${session.baseUrl}/message`;
+  const preferId = options.contactId ? String(options.contactId) : '';
+  const fallback = contacts.find((c) => c.active) || contacts[0] || {};
+  const activeId = preferId || (fallback.id ? String(fallback.id) : '');
+
+  let conversation = null;
+  let conversationError = '';
+  if (activeId && !error) {
+    try {
+      conversation = await client.fetchConversation(activeId, { start: 0 });
+    } catch (err) {
+      conversationError = (err && err.message) || '会话读取失败';
+    }
+  }
+
+  lastOpened = { kind: 'message', key: 'inbox', id: 'inbox', title: '私信', url };
+  const view = renderMessage({ contacts, me, activeId, conversation, conversationError, error, url });
+
+  let panel = null;
+
+  const contactOf = (id) => contacts.find((c) => String(c.id) === String(id)) || {};
+
+  /** 拉一段会话并推到右半边（不重载整页，草稿框不会被清掉） */
+  const loadConversation = async (contactId, start) => {
+    const contact = contactOf(contactId);
+    try {
+      const conv = await client.fetchConversation(contactId, { start });
+      if (panel && panel.webview) {
+        panel.webview.postMessage({
+          type: 'pmConversation',
+          contactId: String(contactId),
+          html: renderConversationInner(conv, { contact, me }),
+        });
+      }
+      return conv;
+    } catch (err) {
+      if (panel && panel.webview) {
+        panel.webview.postMessage({
+          type: 'pmConversation',
+          contactId: String(contactId),
+          html: renderConversationInner(null, { contact, me, error: err.message }),
+        });
+      }
+      return null;
+    }
+  };
+
+  panel = showPanel(appContext, 'message', {
+    ...view,
+    enableMathJax: true,
+    onMessage: (msg) => {
+      if (!msg) return undefined;
+      if (msg.type === 'openExternal' && msg.url) return openExternal(msg.url);
+      if (msg.type === 'openPath' && msg.path) return openExternal(`${session.baseUrl}${msg.path}`);
+      if (msg.type === 'openProblem' && msg.key) return showProblem(msg.key).catch(handleError);
+      if (msg.type === 'openContest' && msg.id) return showContest(msg.id).catch(handleError);
+
+      const contactId = msg.contactId ? String(msg.contactId) : activeId;
+      if (msg.type === 'pmOpen') return loadConversation(contactId, 0);
+      if (msg.type === 'pmOlder') return loadConversation(contactId, Number(msg.start) || 0);
+      if (msg.type === 'pmRefresh') {
+        return loadConversation(contactId, 0).then((conv) => {
+          if (conv) vscode.window.setStatusBarMessage('会话已刷新', 1500);
+        });
+      }
+      if (msg.type === 'pmSend') {
+        const content = String(msg.content == null ? '' : msg.content);
+        if (!content.trim()) {
+          panel.webview.postMessage({ type: 'toast', text: '消息不能为空' });
+          return undefined;
+        }
+        return (async () => {
+          try {
+            await client.sendMessage(contactId, content);
+            panel.webview.postMessage({ type: 'pmClear' });
+            await loadConversation(contactId, 0);
+          } catch (err) {
+            panel.webview.postMessage({ type: 'toast', text: err.message });
+          }
+        })();
+      }
+      if (msg.type === 'pmDelete') {
+        return (async () => {
+          const pick = await vscode.window.showWarningMessage('删除这条私信？', { modal: true }, '删除');
+          if (pick !== '删除') return;
+          try {
+            await client.deleteMessage(msg.id);
+            await loadConversation(contactId, 0);
+          } catch (err) {
+            panel.webview.postMessage({ type: 'toast', text: err.message });
+          }
+        })();
+      }
+      if (msg.type === 'pmBlock') {
+        return (async () => {
+          const blocked = msg.blocked === true;
+          try {
+            await client.setContactBlocked(contactId, blocked);
+            await loadConversation(contactId, 0);
+            vscode.window.setStatusBarMessage(blocked ? '已拉黑' : '已解除拉黑', 2000);
+          } catch (err) {
+            panel.webview.postMessage({ type: 'toast', text: err.message });
+          }
+        })();
+      }
+
+      if (msg.type !== 'action') return undefined;
+      switch (msg.action) {
+        case 'browser':
+          return openExternal(url);
+        case 'pmRefreshList':
+          client.clearCache();
+          return showMessages({ contactId: activeId }).catch(handleError);
+        case 'refresh':
+          client.clearCache();
+          return showMessages({ contactId: activeId }).catch(handleError);
+        default:
+          return undefined;
+      }
+    },
+  });
 }
 
 async function showGroup(nameOrId, options = {}) {
@@ -1179,6 +1436,358 @@ async function submitCurrentCode(options = {}) {
 }
 
 /* ------------------------------------------------------------------ */
+/* 随机来一道题                                                        */
+/* ------------------------------------------------------------------ */
+
+/** 随机抽题的可选范围。前三个不需要登录（但看题面仍然要登录）。 */
+const RANDOM_OJ_CHOICES = [
+  {
+    id: 'any',
+    label: '$(globe) 不限 OJ',
+    description: 'Codeforces / 洛谷 各一半',
+    detail: '选题不需要登录；打开题面才需要',
+  },
+  {
+    id: 'CodeForces',
+    label: '$(symbol-constant) Codeforces',
+    description: '可选 rating 区间 + 算法标签',
+    detail: '用官方题库接口，难度和标签都准',
+  },
+  {
+    id: '洛谷',
+    label: '$(symbol-constant) 洛谷',
+    description: '可选难度（红 → 黑）+ 算法标签',
+    detail: '用洛谷题目列表，难度和标签都准',
+  },
+  {
+    id: 'vjudge',
+    label: '$(cloud) VJudge 全站随机',
+    description: '不挑 OJ，从 VJudge 题库里抽',
+    detail: '需要登录 VJudge',
+  },
+  {
+    id: 'other',
+    label: '$(ellipsis) 其他 OJ…',
+    description: '从 VJudge 收录的 OJ 里挑一个',
+    detail: '需要登录 VJudge；这个 OJ 没有难度数据',
+  },
+];
+
+/** 给「再来一道」用的简短描述 */
+function randomFilterSummary(filter) {
+  if (!filter) return '';
+  const oj =
+    filter.oj === 'any'
+      ? '不限 OJ'
+      : filter.oj === 'vjudge'
+        ? 'VJudge 全站'
+        : filter.oj === 'other'
+          ? filter.ojName || '某 OJ'
+          : filter.oj;
+  const level = filter.levelLabel ? ` · ${filter.levelLabel}` : '';
+  const tags = Array.isArray(filter.tags) && filter.tags.length ? ` · 标签 ${filter.tagLabel || tagCountLabel(filter.tags)}` : '';
+  return `${oj}${level}${tags}`;
+}
+
+/** 没存标签名时（比如从旧版本恢复的条件）退化成「N 个标签」 */
+function tagCountLabel(tags) {
+  const list = Array.isArray(tags) ? tags : [];
+  return list.length > 2 ? `${list.slice(0, 2).join(' / ')} 等 ${list.length} 个` : list.join(' / ');
+}
+
+/** 选 Codeforces 的 rating 区间（含自定义输入） */
+async function askCodeforcesRange() {
+  const items = randomLib.CF_PRESETS.map((preset) => ({
+    label: preset.label,
+    description: preset.id === 'any' ? '全部难度' : '',
+    preset,
+  }));
+  items.push({ label: '$(edit) 自定义区间…', description: '比如 1600-1900', custom: true });
+
+  const pick = await vscode.window.showQuickPick(items, {
+    title: 'Codeforces 难度',
+    placeHolder: '选一个 rating 区间',
+    ignoreFocusOut: true,
+  });
+  if (!pick) return null;
+
+  if (!pick.custom) {
+    const preset = pick.preset;
+    return {
+      rating: { min: preset.min, max: preset.max },
+      label: preset.id === 'any' ? '' : preset.label,
+    };
+  }
+
+  const text = await vscode.window.showInputBox({
+    title: 'Codeforces 难度',
+    prompt: '输入 rating 区间，如 1600-1900（只写 1800 表示 1700-1900）',
+    value: '1600-1900',
+    ignoreFocusOut: true,
+    validateInput: (value) => (randomLib.parseRatingRange(value) ? '' : '格式像 1600-1900'),
+  });
+  if (!text) return null;
+  const range = randomLib.parseRatingRange(text);
+  if (!range) return null;
+  return { rating: range, label: randomLib.ratingLabel(range.min, range.max) };
+}
+
+/** 选洛谷难度（1 难度一档，或自定义多选） */
+async function askLuoguLevels() {
+  const items = randomLib.LUOGU_PRESETS.map((preset) => ({
+    label: preset.label,
+    description: preset.id === 'any' ? '全部难度' : preset.note || '',
+    preset,
+  }));
+  items.push({ label: '$(edit) 自定义（可多选）…', description: '同时抽好几个难度', custom: true });
+
+  const pick = await vscode.window.showQuickPick(items, {
+    title: '洛谷难度',
+    placeHolder: '选一个难度',
+    ignoreFocusOut: true,
+  });
+  if (!pick) return null;
+
+  if (!pick.custom) {
+    const preset = pick.preset;
+    return {
+      levels: preset.levels.slice(),
+      label: preset.id === 'any' ? '' : preset.label,
+    };
+  }
+
+  const levelItems = randomLib.LUOGU_LEVELS.filter((level) => level.id > 0).map((level) => ({
+    label: randomLib.LUOGU_LEVEL_LABEL[level.id],
+    description: level.cf || '',
+    level: level.id,
+    picked: false,
+  }));
+  const picked = await vscode.window.showQuickPick(levelItems, {
+    title: '洛谷难度（可多选）',
+    placeHolder: '勾选难度后回车（Esc 取消）',
+    canPickMany: true,
+    ignoreFocusOut: true,
+  });
+  if (!picked) return null;
+  if (!picked.length) return { levels: [0], label: '' };
+  return { levels: picked.map((p) => p.level), label: picked.map((p) => p.label).join(' / ') };
+}
+
+/**
+ * 选算法标签（可多选，命中任一）。
+ * 洛谷的标签是中文（id 从 `/_lfe/tags` 来，缓存 6 小时）；CF 的标签是英文小写，配一句中文说明。
+ * 返回 `null` = 取消整次抽题；`{ tags: [] }` = 不限标签。
+ */
+async function askRandomTags(oj) {
+  if (oj !== 'CodeForces' && oj !== '洛谷') return { tags: [], tagLabel: '' };
+
+  let items = [];
+  try {
+    items = await withProgress('正在读取算法标签…', async () => {
+      if (oj === '洛谷') {
+        const tags = await randomLib.fetchLuoguTags();
+        return tags.map((t) => ({
+          label: t.name,
+          description: t.parentName ? `属于 ${t.parentName}` : '',
+          tag: t.id,
+        }));
+      }
+      const tags = await randomLib.codeforcesTags();
+      return tags.map((t) => ({
+        label: t.tag,
+        description: [randomLib.CF_TAG_ZH[t.tag] || '', `${t.count} 题`].filter(Boolean).join(' · '),
+        tag: t.tag,
+      }));
+    });
+  } catch (err) {
+    // 标签拿不到不该挡着抽题：说一声，然后不带标签继续
+    vscode.window.showWarningMessage(
+      `标签列表没拿到（${err && err.message ? err.message : err}），这次就不带标签抽了`
+    );
+    return { tags: [], tagLabel: '' };
+  }
+
+  const picked = await vscode.window.showQuickPick(items, {
+    title: `${oj === '洛谷' ? '洛谷' : 'Codeforces'} 算法标签（可多选）`,
+    placeHolder: '回车确认；一个都不选或按 Esc = 不限标签',
+    canPickMany: true,
+    ignoreFocusOut: true,
+    matchOnDescription: true,
+  });
+  // 标签是最后一步、也是可选的，Esc 就不当「取消整次抽题」了，直接当不限标签
+  if (!picked) return { tags: [], tagLabel: '' };
+  if (!picked.length) return { tags: [], tagLabel: '' };
+  return { tags: picked.map((p) => p.tag), tagLabel: picked.map((p) => p.label).join(' / ') };
+}
+
+/** 从 /util/cfg 的 remoteOJs 里挑一个 OJ（中文 OJ 名就是 VJudge 的写法） */
+async function askOtherOj() {
+  let remote = {};
+  try {
+    const cfg = await client.siteConfig();
+    remote = (cfg && cfg.remoteOJs) || {};
+  } catch {
+    remote = {};
+  }
+  const names = Object.keys(remote).filter((name) => name !== 'CodeForces' && name !== '洛谷');
+  if (!names.length) {
+    const typed = await vscode.window.showInputBox({
+      title: '其他 OJ',
+      prompt: '输入 VJudge 上的 OJ 名字（如 HDU、POJ、AtCoder、牛客）',
+      ignoreFocusOut: true,
+    });
+    if (!typed || !typed.trim()) return null;
+    return { oj: 'other', ojName: typed.trim(), label: typed.trim() };
+  }
+  names.sort((a, b) => a.localeCompare(b, 'zh-CN'));
+  const pick = await vscode.window.showQuickPick(
+    names.map((name) => {
+      const info = remote[name] || {};
+      return {
+        label: name,
+        description: info.isAlive === false ? '可能已下线' : '',
+        detail: info.homepage || '',
+        name,
+      };
+    }),
+    {
+      title: `VJudge 收录了 ${names.length} 个 OJ（按 OJ 随机需要登录）`,
+      placeHolder: '选一个 OJ（Esc 取消）',
+      ignoreFocusOut: true,
+    }
+  );
+  if (!pick) return null;
+  return { oj: 'other', ojName: pick.name, label: pick.name };
+}
+
+/**
+ * 问「抽哪个范围」。
+ * 会把上次的条件放在第一项，连按两次回车就能「再来一道」。
+ * @returns {Promise<null|{oj:string, rating?:object, levels?:number[], label?:string}>}
+ */
+async function askRandomFilter() {
+  const saved = store.getRandomFilter();
+  const items = [];
+  if (saved && saved.oj) {
+    items.push({
+      label: '$(debug-restart) 再来一道',
+      description: randomFilterSummary(saved),
+      detail: '沿用上次的条件直接抽',
+      saved,
+    });
+  }
+  items.push({ label: '$(list-unordered) 选条件…', description: '先选 OJ，再选难度 / 标签', choose: true });
+  for (const choice of RANDOM_OJ_CHOICES) {
+    items.push({
+      label: choice.label,
+      description: choice.description,
+      detail: choice.detail,
+      choice,
+    });
+  }
+
+  const pick = await vscode.window.showQuickPick(items, {
+    title: '随机来一道题',
+    placeHolder: '选一个范围（Esc 取消）',
+    ignoreFocusOut: true,
+    matchOnDetail: true,
+  });
+  if (!pick) return null;
+  if (pick.saved) return pick.saved;
+  if (!pick.choose && !pick.choice) return null;
+
+  // 选条件：先选 OJ
+  let choice = pick.choice;
+  let base = null;
+  if (pick.choose || !choice) {
+    const ojPick = await vscode.window.showQuickPick(
+      RANDOM_OJ_CHOICES.map((c) => ({
+        label: c.label,
+        description: c.description,
+        detail: c.detail,
+        choice: c,
+      })),
+      { title: '随机来一道题 · 选 OJ', placeHolder: 'Esc 取消', ignoreFocusOut: true, matchOnDetail: true }
+    );
+    if (!ojPick) return null;
+    choice = ojPick.choice;
+  }
+  if (choice.id === 'other') {
+    base = await askOtherOj();
+    if (!base) return null;
+  } else {
+    base = { oj: choice.id };
+  }
+
+  // 再选难度：只有 CF / 洛谷有难度数据
+  let level = null;
+  if (base.oj === 'CodeForces') level = await askCodeforcesRange();
+  else if (base.oj === '洛谷') level = await askLuoguLevels();
+  if (level === null && (base.oj === 'CodeForces' || base.oj === '洛谷')) return null;
+
+  // 最后选标签（只有 CF / 洛谷有算法标签）
+  const tagged = await askRandomTags(base.oj);
+  if (tagged === null) return null;
+
+  const filter = {
+    ...base,
+    ...(level || {}),
+    ...(tagged || {}),
+    label: randomFilterSummary({ ...base, ...(level || {}), ...(tagged || {}) }),
+  };
+  return filter;
+}
+
+/** 抽一道并打开；抽不到时把话说清楚，别把 Node 的原始报错甩给用户 */
+async function pickAndShowRandomProblem(filter) {
+  const target = filter.oj === 'other' ? filter.ojName : filter.oj;
+  let result = null;
+  try {
+    result = await withProgress('正在挑一道随机题…', () =>
+      randomLib.pickRandom({
+        oj: target,
+        client,
+        rating: filter.rating,
+        levels: filter.levels,
+        tags: filter.tags,
+      })
+    );
+  } catch (err) {
+    // 其他 OJ 走 VJudge 的题目列表，登录失效时给一个能点的入口
+    if (err && err.code === 'LOGIN_REQUIRED') throw err;
+    throw new Error(
+      `${err && err.message ? err.message : err}${filter.oj === 'other' ? '（其他 OJ 的随机抽题需要登录 VJudge）' : ''}`
+    );
+  }
+  if (!result || !result.key) throw new Error('没有抽到题目，再试一次');
+
+  // 记住这次的条件（「再来一道」用）
+  await store.setRandomFilter({
+    oj: filter.oj,
+    ojName: filter.ojName || '',
+    rating: filter.rating || null,
+    levels: filter.levels || null,
+    tags: Array.isArray(filter.tags) && filter.tags.length ? filter.tags : null,
+    tagLabel: filter.tagLabel || '',
+    label: randomFilterSummary(filter),
+  });
+
+  // 题面只对登录用户开放，没登录的话先劝一手，省得打开后又是「拿不到题面」
+  if (!session.hasCredentials) {
+    const choice = await vscode.window.showWarningMessage(
+      `随机到 ${result.key}，但题面需要登录 VJudge 才能查看`,
+      '去登录',
+      '先打开看看'
+    );
+    if (choice === '去登录') await vscode.commands.executeCommand('vjudgeHelper.login');
+  }
+
+  await showProblem(result.key);
+  const extra = [result.detail, result.title].filter(Boolean).join(' · ');
+  vscode.window.setStatusBarMessage(`随机到 ${result.key}${extra ? ` · ${extra}` : ''}`, 5000);
+}
+
+/* ------------------------------------------------------------------ */
 /* 命令实现                                                            */
 /* ------------------------------------------------------------------ */
 
@@ -1256,6 +1865,8 @@ const commands = {
     throw new Error('请输入文章 ID 或文章链接');
   }),
 
+  openMessages: wrap(async () => showMessages()),
+
   openGroup: wrap(async () => {
     const value = await vscode.window.showInputBox({
       title: 'VJudge：打开团队',
@@ -1307,8 +1918,9 @@ const commands = {
   }),
 
   openRandomProblem: wrap(async () => {
-    const key = await withProgress('正在挑选一道随机题…', () => client.randomProblem());
-    await showProblem(key);
+    const filter = await askRandomFilter();
+    if (!filter) return;
+    await pickAndShowRandomProblem(filter);
   }),
 
   submitCode: wrap(async () => {
@@ -1525,7 +2137,8 @@ const commands = {
       { label: '$(organization) 打开团队…', command: 'vjudgeHelper.openGroup' },
       { label: '$(search) 搜索团队…', command: 'vjudgeHelper.searchGroup' },
       { label: '$(file-text) 打开文章…', command: 'vjudgeHelper.openArticle' },
-      { label: '$(lightbulb) 随机来一道题', command: 'vjudgeHelper.openRandomProblem' },
+      { label: '$(comment-discussion) 打开私信', command: 'vjudgeHelper.openMessages' },
+      { label: '$(lightbulb) 随机来一道题…', command: 'vjudgeHelper.openRandomProblem' },
       { label: '$(cloud-upload) 提交当前文件代码', command: 'vjudgeHelper.submitCode', description: '提交到当前正在看的题目（比赛题会自动交进比赛）' },
       { label: '$(cloud-upload) 提交到指定题目…', command: 'vjudgeHelper.submitToProblem' },
       { label: '$(account) 登录 / 更新凭据', command: 'vjudgeHelper.login' },

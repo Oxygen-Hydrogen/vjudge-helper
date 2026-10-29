@@ -1,6 +1,6 @@
 'use strict';
 
-const { escapeHtml, formatDateTime, relativeTime } = require('../util');
+const { escapeHtml, formatDateTime, relativeTime, normalizeMathTokens } = require('../util');
 const { renderMarkdown } = require('../markdown');
 const { formatClock, formatPenalty } = require('../standings');
 const { submitMethodsOf } = require('../submit');
@@ -323,6 +323,11 @@ function renderStandingsInner(standings, options = {}) {
   if (standings.partialScore) {
     banners.push(`<div class="vj-banner">这场比赛按分数排名（部分分），不是纯 ICPC 罚时。</div>`);
   }
+  if (standings.includePractice) {
+    banners.push(
+      `<div class="vj-banner vj-banner--warn">已包含<b>赛后补题</b>：标 † 的是比赛结束后才通过的，排名会因此比「仅赛时」好看。</div>`
+    );
+  }
 
   if (!rows.length) {
     return `${banners.join('')}<p class="vj-dim">还没有人参赛或提交。</p>`;
@@ -342,9 +347,16 @@ function renderStandingsInner(standings, options = {}) {
       .map((cell) => {
         if (cell.acSeconds !== null) {
           const extra = cell.fails ? `<sup class="vj-st__fails">+${cell.fails}</sup>` : '';
-          return `<td class="vj-st__cell vj-st__cell--ac" title="通过于 ${formatClock(
-            cell.acSeconds
-          )}${cell.fails ? `，此前错 ${cell.fails} 次` : ''}">${formatClock(cell.acSeconds)}${extra}</td>`;
+          // †＝赛后补题通过（只有开了「含补题」才可能出现）
+          const up = cell.upsolved
+            ? `<sup class="vj-st__upsolve" title="赛后补题（不计入赛时成绩）">†</sup>`
+            : '';
+          const tip = `${cell.upsolved ? '赛后补题通过' : '通过'}于 ${formatClock(cell.acSeconds)}${
+            cell.fails ? `，此前错 ${cell.fails} 次` : ''
+          }`;
+          return `<td class="vj-st__cell vj-st__cell--ac${
+            cell.upsolved ? ' is-upsolve' : ''
+          }" title="${escapeHtml(tip)}">${formatClock(cell.acSeconds)}${extra}${up}</td>`;
         }
         if (cell.fails > 0) {
           return `<td class="vj-st__cell vj-st__cell--fail" title="未通过 ${cell.fails} 次">${'-'.repeat(
@@ -463,6 +475,7 @@ function renderContest(contest, options = {}) {
   }
 
   const interval = Number(options.pollInterval) > 0 ? Number(options.pollInterval) : 0;
+  const includePractice = !!options.includePractice;
   const standingsSection = `<section class="vj-standings" id="vj-standings-section">
     <div class="vj-standings__head">
       <h2>实时榜单</h2>
@@ -472,12 +485,23 @@ function renderContest(contest, options = {}) {
       <span class="vj-dim" id="vj-standings-updated">${
         options.standings ? `更新于 ${new Date(options.standings.updatedAt).toLocaleTimeString('zh-CN')}` : ''
       }</span>
+      <button class="vj-btn vj-btn--mini${includePractice ? ' is-on' : ''}" id="vj-practice-toggle"
+        data-action="standingsPractice" data-on="${includePractice ? '1' : '0'}"
+        title="切到「含补题」会把比赛结束后才通过的提交也算进排名（标 †）">${
+          includePractice ? '含赛后补题 ✓' : '仅赛时'
+        }</button>
       <button class="vj-btn vj-btn--mini" data-action="rankRefresh">立即刷新</button>
     </div>
     <div id="vj-standings-inner">${renderStandingsInner(options.standings, {
       emptyText: options.standingsError,
     })}</div>
   </section>`;
+
+  const discussionSection = renderContestDiscussion(options.discussion, {
+    contestId: contest.id,
+    error: options.discussionError,
+    me: options.me,
+  });
 
   return {
     title: contest.title || `比赛 ${contest.id}`,
@@ -495,10 +519,256 @@ function renderContest(contest, options = {}) {
       }</div>
       ${contest.opennessLabel ? `<div class="vj-kv"><span>比赛类型</span><b>${escapeHtml(contest.opennessLabel)}</b></div>` : ''}
       ${contest.accessLabel ? `<div class="vj-kv"><span>当前权限</span><b>${escapeHtml(contest.accessLabel)}</b></div>` : ''}
-    </section>${standingsSection}${problemSection}`,
+    </section>${standingsSection}${problemSection}${discussionSection}`,
     footer: `<span>${escapeHtml(contest.url || '')}</span>`,
     data: contest,
   };
+}
+
+/* ------------------------------------------------------------------ */
+/* 私信                                                                */
+/* ------------------------------------------------------------------ */
+
+/** 头像位置只放首字母：站点头像是 /user/avatar/<id>，带登录态，webview 里加载会掉图 */
+function avatarInitial(name) {
+  const text = String(name || '?').trim();
+  return text ? text.slice(0, 1).toUpperCase() : '?';
+}
+
+/** 会话列表（左栏）。data-contact 是点击时回传给扩展的 id */
+function renderContactList(contacts, activeId) {
+  const list = Array.isArray(contacts) ? contacts : [];
+  if (!list.length) {
+    return `<ul class="vj-pm__list" id="vj-pm-list"><li class="vj-pm__empty">还没有任何会话</li></ul>`;
+  }
+  const items = list
+    .map((c) => {
+      const active = String(c.id) === String(activeId);
+      const preview = String(c.preview || '').replace(/\s+/g, ' ').trim();
+      return `<li class="vj-pm__item${active ? ' is-active' : ''}${c.unread ? ' is-unread' : ''}" data-contact="${
+        escapeHtml(c.id)
+      }" title="${escapeHtml(c.name)}">
+        <span class="vj-pm__avatar">${escapeHtml(avatarInitial(c.name))}</span>
+        <span class="vj-pm__who">
+          <b>${escapeHtml(c.name || `#${c.id}`)}</b>
+          <span class="vj-pm__time">${escapeHtml(c.timeText || '')}</span>
+        </span>
+        <span class="vj-pm__preview">${escapeHtml(preview)}</span>
+      </li>`;
+    })
+    .join('');
+  return `<ul class="vj-pm__list" id="vj-pm-list">${items}</ul>`;
+}
+
+/**
+ * 一段会话的内容（可单独替换，切联系人时只换这块）
+ * @param {{messages: object[], blockedByMe: boolean, canBlock: boolean, start: number}} conversation
+ * @param {{contact?: object, me?: string, error?: string}} options
+ */
+function renderConversationInner(conversation, options = {}) {
+  const contact = options.contact || {};
+  const me = String(options.me || '');
+  if (options.error) {
+    return `<div class="vj-pm__thread">${emptyState('打不开这个会话', options.error)}</div>`;
+  }
+  if (!conversation) {
+    return `<div class="vj-pm__thread"><p class="vj-dim">选择左侧的联系人开始看私信。</p></div>`;
+  }
+
+  const messages = Array.isArray(conversation.messages) ? conversation.messages : [];
+  const blocked = conversation.blockedByMe === true;
+  const hasOlder = conversation.start > 0 || messages.length >= 20;
+
+  const head = `<div class="vj-pm__head">
+    <span class="vj-pm__avatar vj-pm__avatar--lg">${escapeHtml(avatarInitial(contact.name))}</span>
+    <b>${escapeHtml(contact.name || `#${conversation.contactId}`)}</b>
+    <span class="vj-dim">${messages.length ? `${messages.length} 条` : ''}</span>
+    ${
+      conversation.canBlock === false
+        ? ''
+        : `<button class="vj-btn vj-btn--mini${blocked ? ' is-on' : ''}" data-action="pmBlock" data-blocked="${
+            blocked ? '1' : '0'
+          }">${blocked ? '解除拉黑' : '拉黑'}</button>`
+    }
+    <button class="vj-btn vj-btn--mini" data-action="pmRefresh">刷新</button>
+  </div>`;
+
+  const banner = blocked
+    ? `<div class="vj-banner vj-banner--warn">已拉黑这个会话：双方都发不了消息。</div>`
+    : '';
+
+  const body = messages.length
+    ? messages
+        .map((m) => {
+          const mine = !!me && m.author === me;
+          const html = renderMarkdown(normalizeMathTokens(m.content || ''));
+          return `<div class="vj-pm__msg${mine ? ' is-me' : ''}">
+            <div class="vj-pm__meta">
+              <b>${escapeHtml(m.author || '?')}</b>
+              <span class="vj-dim">${escapeHtml(formatDateTime(m.time))}</span>
+              <button class="vj-pm__del" data-action="pmDelete" data-id="${escapeHtml(
+                m.id
+              )}" title="撤回这条消息">×</button>
+            </div>
+            <div class="vj-md">${html}</div>
+          </div>`;
+        })
+        .join('')
+    : `<p class="vj-dim">还没有聊过，往下写第一句吧。</p>`;
+
+  const older = hasOlder
+    ? `<button class="vj-btn vj-btn--mini" data-action="pmOlder">查看更早消息</button>`
+    : '';
+
+  return `${head}${banner}
+    <div class="vj-pm__thread" id="vj-pm-thread">${older}${body}</div>
+    <div class="vj-pm__compose">
+      <textarea id="vj-pm-input" rows="3" placeholder="用 Markdown 写，Ctrl+Enter 发送"${
+        blocked ? ' disabled' : ''
+      }></textarea>
+      <div class="vj-pm__compose-bar">
+        <span class="vj-dim">${blocked ? '已拉黑，不能发送' : 'Ctrl+Enter 发送'}</span>
+        <button class="vj-btn vj-btn--primary" data-action="pmSend"${blocked ? ' disabled' : ''}>发送</button>
+      </div>
+    </div>`;
+}
+
+/** 私信面板（整页） */
+function renderMessage(view, options = {}) {
+  const contacts = (view && view.contacts) || [];
+  const activeId = view && view.activeId ? String(view.activeId) : '';
+  const contact = contacts.find((c) => String(c.id) === activeId) || {};
+
+  const meta = [{ label: '会话', value: String(contacts.length) }];
+  if (view && view.me) meta.push({ label: '登录为', value: view.me });
+
+  const actions = [{ id: 'pmRefreshList', label: '刷新列表' }, { id: 'browser', label: '浏览器打开' }];
+
+  const body = view && view.error
+    ? emptyState('私信打不开', view.error, '私信需要登录 VJudge；登录后重开这个面板即可。')
+    : `<div class="vj-pm">
+        <aside class="vj-pm__contacts">
+          <div class="vj-pm__contacts-head">私信 <span class="vj-dim">${contacts.length}</span></div>
+          ${renderContactList(contacts, activeId)}
+        </aside>
+        <section class="vj-pm__conversation" id="vj-pm-conversation" data-contact="${escapeHtml(
+          activeId
+        )}" data-me="${escapeHtml((view && view.me) || '')}">
+          ${renderConversationInner(view && view.conversation, {
+            contact,
+            me: (view && view.me) || '',
+            error: (view && view.conversationError) || '',
+          })}
+        </section>
+      </div>`;
+
+  return {
+    title: 'VJudge 私信',
+    subtitle: view && view.me ? `登录为 ${view.me}` : 'VJudge 站内私信',
+    meta,
+    actions,
+    body,
+    footer: `<span>${escapeHtml((view && view.url) || '')}</span>`,
+    data: view,
+  };
+}
+
+/* ------------------------------------------------------------------ */
+/* 讨论区（文章 / 比赛 / 题目共用一套评论）                              */
+/* ------------------------------------------------------------------ */
+
+/** 把扁平 posts 组织成 parentId → children 的树，深度最多 3 层 */
+function buildCommentTree(posts) {
+  const list = Array.isArray(posts) ? posts : [];
+  const byParent = new Map();
+  for (const post of list) {
+    const key = String(post.parentId || '0');
+    if (!byParent.has(key)) byParent.set(key, []);
+    byParent.get(key).push(post);
+  }
+  for (const arr of byParent.values()) arr.sort((a, b) => a.time - b.time);
+  return byParent;
+}
+
+/** 讨论区帖子列表（可单独替换） */
+function renderDiscussionPosts(discussion, options = {}) {
+  if (options.error) return `<p class="vj-dim">${escapeHtml(options.error)}</p>`;
+  if (!discussion) return `<p class="vj-dim">正在读取讨论区…</p>`;
+
+  const posts = Array.isArray(discussion.posts) ? discussion.posts : [];
+  if (!posts.length) return `<p class="vj-dim">这里还没有人发言，抢个沙发？</p>`;
+
+  const byParent = buildCommentTree(posts);
+  const myId = String(options.myId || '');
+  const shown = new Set();
+
+  const renderOne = (post, depth) => {
+    if (!post || shown.has(post.id)) return '';
+    shown.add(post.id);
+    const children = (byParent.get(String(post.id)) || []).filter((c) => !shown.has(c.id));
+    const mine = !!myId && String(post.authorId || '') === myId;
+    const content = post.deleted
+      ? '<span class="vj-dim">[已删除]</span>'
+      : renderMarkdown(normalizeMathTokens(post.content || ''));
+    const kids =
+      depth < 3 && children.length
+        ? `<div class="vj-discuss__kids">${children.map((c) => renderOne(c, depth + 1)).join('')}</div>`
+        : '';
+
+    return `<article class="vj-discuss__post${post.deleted ? ' is-deleted' : ''}${
+      mine ? ' is-me' : ''
+    }" data-post="${escapeHtml(post.id)}">
+      <div class="vj-discuss__meta">
+        <span class="vj-pm__avatar">${escapeHtml(avatarInitial(post.author))}</span>
+        <b>${escapeHtml(post.author || '?')}</b>
+        <span class="vj-dim">${escapeHtml(formatDateTime(post.time))}</span>
+        ${post.likeCnt ? `<span class="vj-dim">👍 ${post.likeCnt}</span>` : ''}
+        ${post.deleted ? '' : `<button class="vj-btn vj-btn--mini" data-action="discussReply" data-post="${escapeHtml(post.id)}" data-author="${escapeHtml(post.author || '')}">回复</button>`}
+        ${mine && !post.deleted ? `<button class="vj-btn vj-btn--mini" data-action="discussDelete" data-post="${escapeHtml(post.id)}">删除</button>` : ''}
+      </div>
+      <div class="vj-md">${content}</div>
+      ${kids}
+    </article>`;
+  };
+
+  const roots = (byParent.get('0') || []).slice();
+  // 父帖不在这批数据里的（分页截断）也当根节点显示，免得整棵树消失
+  for (const post of posts) {
+    if (!byParent.has(String(post.parentId || '0')) && String(post.parentId || '0') !== '0') roots.push(post);
+  }
+  if (!roots.length) roots.push(...posts);
+  roots.sort((a, b) => (b.topIndex || 0) - (a.topIndex || 0) || a.time - b.time);
+
+  return roots.map((p) => renderOne(p, 0)).join('');
+}
+
+/**
+ * 比赛讨论区整块。
+ * @param {object|null} discussion fetchDiscussion 的返回
+ * @param {{contestId?: string, error?: string, me?: string}} options
+ */
+function renderContestDiscussion(discussion, options = {}) {
+  const count = discussion ? discussion.commentNumber || (discussion.posts || []).length : 0;
+  return `<section class="vj-discuss" id="vj-discussion-section">
+    <div class="vj-standings__head">
+      <h2>讨论区</h2>
+      <span class="vj-dim" id="vj-discuss-count">${count ? `${count} 条评论` : ''}</span>
+      <button class="vj-btn vj-btn--mini" data-action="discussRefresh">刷新</button>
+      <button class="vj-btn vj-btn--mini" data-action="discussBrowser">网页打开</button>
+    </div>
+    <div id="vj-discussion-posts">${renderDiscussionPosts(discussion, options)}</div>
+    <div class="vj-discuss__compose">
+      <div class="vj-discuss__replyto" id="vj-discuss-replyto" hidden>
+        回复 <b id="vj-discuss-reply-name"></b>
+        <button class="vj-btn vj-btn--mini" data-action="discussCancelReply">取消</button>
+      </div>
+      <textarea id="vj-discuss-input" rows="3" placeholder="用 Markdown 写，Ctrl+Enter 发表"></textarea>
+      <div class="vj-discuss__compose-bar">
+        <span class="vj-dim">Ctrl+Enter 发表 · 讨论区是公开的，注意别透露题解以外的隐私</span>
+        <button class="vj-btn vj-btn--primary" data-action="discussSend">发表</button>
+      </div>
+    </div>
+  </section>`;
 }
 
 module.exports = {
@@ -507,6 +777,11 @@ module.exports = {
   renderContest,
   renderGroup,
   renderStandingsInner,
+  renderMessage,
+  renderContactList,
+  renderConversationInner,
+  renderContestDiscussion,
+  renderDiscussionPosts,
   emptyState,
   linkProblem,
   linkContest,

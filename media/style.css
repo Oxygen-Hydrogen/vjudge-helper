@@ -806,3 +806,350 @@ table.vj-st tbody tr:last-child td {
   padding-top: 0;
   border-top: none;
 }
+
+/* ---------------- 私信 ---------------- */
+
+.vj-pm {
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+
+@media (max-width: 720px) {
+  .vj-pm {
+    grid-template-columns: 1fr;
+  }
+}
+
+.vj-pm__contacts {
+  border: 1px solid var(--vj-border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--vj-card-bg);
+}
+
+.vj-pm__contacts-head {
+  padding: 8px 12px;
+  font-weight: 600;
+  border-bottom: 1px solid var(--vj-border);
+  font-size: 0.86rem;
+}
+
+.vj-pm__list {
+  list-style: none;
+  margin: 0;
+  padding: 4px;
+  max-height: 70vh;
+  overflow-y: auto;
+}
+
+.vj-pm__item {
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  column-gap: 8px;
+  padding: 7px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  position: relative;
+}
+
+.vj-pm__item:hover {
+  background: var(--vj-code-bg);
+}
+
+.vj-pm__item.is-active {
+  background: var(--vj-code-bg);
+  box-shadow: inset 2px 0 0 var(--vj-accent);
+}
+
+.vj-pm__item.is-unread .vj-pm__who b::after {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-left: 5px;
+  border-radius: 50%;
+  background: var(--vj-accent);
+  vertical-align: middle;
+}
+
+.vj-pm__avatar {
+  grid-row: span 2;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.76rem;
+  font-weight: 600;
+  background: color-mix(in srgb, var(--vj-accent) 22%, transparent);
+  color: var(--vj-fg);
+  flex: 0 0 auto;
+}
+
+.vj-pm__avatar--lg {
+  width: 30px;
+  height: 30px;
+  font-size: 0.82rem;
+}
+
+.vj-pm__who {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.vj-pm__who b {
+  font-size: 0.84rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vj-pm__time {
+  margin-left: auto;
+  font-size: 0.72rem;
+  color: var(--vj-muted);
+  flex: 0 0 auto;
+}
+
+.vj-pm__preview {
+  grid-column: 2;
+  font-size: 0.76rem;
+  color: var(--vj-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vj-pm__empty {
+  padding: 12px;
+  color: var(--vj-muted);
+  font-size: 0.84rem;
+}
+
+.vj-pm__conversation {
+  border: 1px solid var(--vj-border);
+  border-radius: 8px;
+  min-height: 320px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.vj-pm__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--vj-border);
+  background: var(--vj-card-bg);
+}
+
+.vj-pm__head b {
+  font-size: 0.9rem;
+}
+
+.vj-pm__head .vj-btn,
+.vj-pm__head [data-action="pmRefresh"] {
+  margin-left: 0;
+}
+
+.vj-pm__head [data-action="pmRefresh"] {
+  margin-left: auto;
+}
+
+.vj-pm__thread {
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 56vh;
+  overflow-y: auto;
+}
+
+.vj-pm__msg {
+  border: 1px solid var(--vj-border);
+  border-radius: 8px;
+  padding: 7px 10px;
+  background: var(--vj-card-bg);
+  max-width: 84%;
+  align-self: flex-start;
+}
+
+.vj-pm__msg.is-me {
+  align-self: flex-end;
+  background: color-mix(in srgb, var(--vj-accent) 14%, transparent);
+  border-color: color-mix(in srgb, var(--vj-accent) 35%, transparent);
+}
+
+.vj-pm__meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.76rem;
+  margin-bottom: 2px;
+}
+
+.vj-pm__del {
+  margin-left: auto;
+  border: none;
+  background: transparent;
+  color: var(--vj-muted);
+  cursor: pointer;
+  font-size: 0.9rem;
+  line-height: 1;
+  padding: 0 2px;
+  opacity: 0;
+}
+
+.vj-pm__msg:hover .vj-pm__del {
+  opacity: 1;
+}
+
+.vj-pm__del:hover {
+  color: var(--vscode-errorForeground, #d13438);
+}
+
+.vj-pm__compose {
+  border-top: 1px solid var(--vj-border);
+  padding: 10px 12px;
+  background: var(--vj-card-bg);
+}
+
+.vj-pm__compose textarea,
+.vj-discuss__compose textarea {
+  width: 100%;
+  resize: vertical;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.84rem;
+  line-height: 1.5;
+  color: var(--vj-fg);
+  background: var(--vj-bg);
+  border: 1px solid var(--vj-border);
+  border-radius: 6px;
+  padding: 7px 9px;
+}
+
+.vj-pm__compose textarea:focus,
+.vj-discuss__compose textarea:focus {
+  outline: 1px solid var(--vj-accent);
+  border-color: var(--vj-accent);
+}
+
+.vj-pm__compose-bar,
+.vj-discuss__compose-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 6px;
+}
+
+.vj-pm__compose-bar .vj-btn,
+.vj-discuss__compose-bar .vj-btn {
+  margin-left: auto;
+}
+
+.vj-pm .vj-md,
+.vj-discuss .vj-md {
+  font-size: 0.88rem;
+}
+
+.vj-pm .vj-md > :first-child,
+.vj-discuss .vj-md > :first-child {
+  margin-top: 0;
+}
+
+.vj-pm .vj-md > :last-child,
+.vj-discuss .vj-md > :last-child {
+  margin-bottom: 0;
+}
+
+/* ---------------- 讨论区 ---------------- */
+
+.vj-discuss {
+  margin-top: 22px;
+  padding-top: 16px;
+  border-top: 1px solid var(--vj-border);
+}
+
+.vj-discuss__post {
+  border-left: 2px solid var(--vj-border);
+  padding: 6px 0 6px 10px;
+  margin: 8px 0;
+}
+
+.vj-discuss__post.is-me {
+  border-left-color: var(--vj-accent);
+}
+
+.vj-discuss__post.is-deleted {
+  opacity: 0.65;
+}
+
+.vj-discuss__meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.8rem;
+  margin-bottom: 2px;
+}
+
+.vj-discuss__meta .vj-btn {
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.vj-discuss__post:hover > .vj-discuss__meta .vj-btn {
+  opacity: 1;
+}
+
+.vj-discuss__kids {
+  margin-left: 12px;
+  padding-left: 8px;
+  border-left: 1px dashed var(--vj-border);
+}
+
+.vj-discuss__kids .vj-discuss__post {
+  margin: 6px 0;
+}
+
+.vj-discuss__compose {
+  margin-top: 12px;
+}
+
+.vj-discuss__replyto {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.8rem;
+  color: var(--vj-muted);
+  margin-bottom: 6px;
+}
+
+/* hidden 属性和 display:flex 打架，得显式压回去 */
+.vj-discuss__replyto[hidden] {
+  display: none;
+}
+
+/* 已选中状态的按钮（「含赛后补题」） */
+.vj-btn.is-on {
+  border-color: var(--vj-accent);
+  color: var(--vj-accent);
+  background: color-mix(in srgb, var(--vj-accent) 12%, transparent);
+}
+
+/* 赛后补题的通过标记 */
+.vj-st__upsolve {
+  color: var(--vscode-editorWarning-foreground, #b8860b);
+  font-weight: 600;
+  margin-left: 1px;
+}
+
+.vj-st__cell.is-upsolve {
+  opacity: 0.9;
+}

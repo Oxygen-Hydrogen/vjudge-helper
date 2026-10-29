@@ -1,5 +1,121 @@
 # Changelog
 
+## 1.6.0
+
+### 新增：随机抽题可以按算法标签筛
+
+`随机来一道题` 在选完难度之后多一步「算法标签（可多选）」：
+
+- **Codeforces**：标签来自官方题库接口（`tags: ['dp','graphs',…]`，共 38 个），本地过滤；
+  菜单里每个标签配中文说明和题数（`dp · 动态规划 · 2529 题`，只统计真正抽得到的题）。
+- **洛谷**：标签来自 `GET /_lfe/tags`（只取 `type === 'Algorithm'`，262 个），列表端点用 `tag=<id>`
+  过滤，翻页时也带着标签；标签表内存缓存 6 小时。
+- 多选是**命中任一**（洛谷 `tag=3,6` 本身就是并集语义，实测 `tag=3,11` 的 count 正好是两档并集）。
+- 标签 + 难度没有交集时**不会偷偷退化成整库**，而是明确告诉你「换标签或放宽难度」。
+- 「VJudge 全站」「其他 OJ」不提供标签筛选（VJudge 的题目库没有算法标签）。
+
+标签拿不到（网络问题）时会问一句「要不就不带标签抽」，不会把整次抽题堵死。
+
+### 其它
+
+- 修掉 `luoguListUrl` 的一个隐患：`Number(null) === 0`，脏标签数据会被拼成 `tag=0`，现在显式挡掉 `null` / `undefined`。
+- 命令标题改为 `随机来一道题（可选 OJ / 难度 / 标签）`。
+- 测试：`random-check` 加 6 项（CF 命中任一 / 标签不退化 / 标签统计 / 洛谷标签解析 / 待 tag 的 URL / 洛谷翻页带标签），
+  `random-flow-check` 加 3 项（洛谷标签 → `tags=[3]`、CF 标签 → `tags=['dp']`、不选标签时不传 tags）。
+
+## 1.5.1
+
+### 修复：洛谷难度对照表过期（少了新加的「提高（青）」）
+
+洛谷在 2026 年 6 月调整了难度体系：「提高+/省选−」与「省选/NOI−」两档拆成
+**提高（青）/ 提高+/省选−（蓝）/ 省选/NOI−（紫）** 三档，档位从 7 个变成 8 个。
+插件里的对照表还停在改版前，后果是：
+
+- 菜单里根本没有「青题」这个选项；
+- 抽到改版后编号 5 的题（青）会显示成「提高+/省选−（蓝）」，6/7 同理错位一档；
+- 编号 8（黑题）落到兜底的「难度 8」上。
+
+现在对照表照抄洛谷自己的 `GET /_lfe/config` → `ProblemDifficulty`：
+`1 入门 · 红 / 2 普及− · 橙 / 3 普及 · 黄 / 4 普及+/提高− · 绿 / 5 提高 · 青 / 6 提高+/省选− · 蓝 / 7 省选/NOI− · 紫 / 8 NOI/NOI+/CTS · 黑`，
+并把青/蓝/紫的 CF 参考区间（2000-2400 / 2300-2700 / 2700-3100）写进了菜单说明。
+
+另外 `random-check.js` 新增 3 项离线断言（档位连续、青=5、`/_lfe/config` 解析），
+加 `--live` 时会联网把本地表和洛谷线上表对一遍，以后再改版能第一时间发现。
+
+## 1.5.0
+
+### 修复：随机一道题时报 `Client network socket disconnected before secure TLS connection was established`
+
+- 根因是 **连接复用**：Node 19 起 `https.globalAgent` 默认 `keepAlive = true`，连接池里那些早被
+  Cloudflare / 前置机单方面关掉的空闲 socket 会被再拿出来用，于是随机报这个错。现在插件每个请求
+  单独握手（`keepAlive: false`），多花约 100ms，换掉随机失败。
+- 断线类错误（`ECONNRESET` / `EPIPE` / `EPROTO` / `ETIMEDOUT` / `EAI_AGAIN` / 超时）现在判定为
+  **可重试**，默认重试两次、退避 400ms → 900ms；重试仍失败才报错，并且把话说成人话
+  （点明是哪个域名连不上），不再直接甩 Node 的原始报错。
+- 之前判重试只匹配 `err.message`，恰好漏掉了这条 `Client network socket disconnected…`，所以一次都没重试过。
+
+### 修复：随机抽到的题变成「random · random / 拿不到题面」
+
+- 匿名访问 `/problem/random` 时 VJudge 会**直接返回登录页 HTML（HTTP 200）**，URL 还停在
+  `/problem/random`；旧代码从 URL 里切出最后一段当题号，于是 `random` 被当成题目打开。
+  现在会先确认返回的确实是题目页（有 `dataJson`），并且题号不能是 `random`，否则抛「需要登录」。
+- 匿名调 `/problem/data` 会返回**空数组 + 假总数 `recordsTotal = 9999999`**，用它当题目总数会抽出
+  不存在的偏移量；现在识别到这个假总数就判成「需要登录」。
+
+### 新增：随机来一道题可以选 OJ、选难度
+
+- 命令面板 / 侧边栏菜单的「随机来一道题」现在先问范围：
+  - **不限 OJ**（Codeforces / 洛谷 各一半）
+  - **Codeforces**：按 rating 区间（800-1000 … 2500+，也可自定义 `1600-1900`）
+  - **洛谷**：按难度（入门红 → NOI 黑），支持一次勾多个难度
+  - **VJudge 全站随机**（需要登录）
+  - **其他 OJ…**：从 VJudge 收录的 62 个 OJ 里挑一个（需要登录，无难度数据）
+- 抽过一次后，命令第一项变成 **「再来一道」**（沿用上次条件，回车即抽），条件存在 `globalState`。
+- 三条选题通道：
+  | 通道 | 接口 | 是否需要登录 | 难度 |
+  | --- | --- | --- | --- |
+  | Codeforces | `GET https://codeforces.com/api/problemset.problems`（整库 2 MB，内存缓存 6 小时） | 否 | rating |
+  | 洛谷 | `GET https://www.luogu.com.cn/problem/list?difficulty=&page=&type=P`（解析 SSR 的 `lentille-context`） | 否 | 1-7 级 |
+  | VJudge | `GET /problem/data`（DataTables，随机 `start` 偏移） | 是 | 无 |
+- 洛谷前面有 WAF：第一次请求 302 回来种 `C3VK`，插件自己跟 Cookie 重试（最多 3 次）。
+- 没登录就抽到题时，会先提示「题面需要登录后才能看」并给「去登录」按钮，省得打开后又是「拿不到题面」。
+- CF 题库会过滤掉 `problemsetName`（acmsguru 之类）、没有 `contestId`、没有 `rating` 的题——
+  这些在 VJudge 上打不开。
+
+## 1.4.0
+
+### 新增：私信（站内 PM）
+
+- 侧边栏菜单 / 命令面板新增「打开私信」（`VJudge: 打开私信`），一个面板里左栏会话、右栏对话。
+- **会话列表只能解析 HTML**：`/message` 是服务端渲染的，没有 JSON 接口。真正是 AJAX 的只有四个动作，
+  都按站点前端源码对齐过：
+  | 动作 | 接口 | 参数 |
+  | --- | --- | --- |
+  | 拉会话 | `POST /message/conversation/{contactId}` | `start`（跳过最近 N 条，每次 20） |
+  | 发送 | `POST /message/post` | `contactId`、`content` |
+  | 删除 | `POST /message/delete?id=` | id 在 **query** 上，不在 body |
+  | 拉黑 | `POST /message/block` | `contactId`、`blocked` |
+- 切联系人 / 发消息 / 删除 / 拉黑都只替换右半边，**输入框里的草稿不会被冲掉**。
+- 消息正文按 Markdown 渲染（代码块照样语法高亮、公式走 MathJax），自己的消息靠右并换底色。
+- `Ctrl+Enter` 发送；被拉黑时会禁用输入框并把按钮切成「解除拉黑」。
+- 未登录时 `/message/conversation/*` 回的是**空对象 `{}`**（不是 401），已专门识别成「需要登录」。
+
+### 新增：比赛面板可以切「仅赛时 / 含赛后补题」
+
+- 榜单标题那一行多了个开关，默认「仅赛时」（和网页默认视图一致）。
+- 切到「含赛后补题」后，比赛结束后才通过的提交也会算进 AC 与排名，单元格用 **†** 标注，
+  横幅会说明「排名会因此比仅赛时好看」。
+- 赛时就过了的题不会被误标成补题（只有真正靠赛后提交 AC 的才标）。
+- 换一场比赛时开关自动回到「仅赛时」，不会把上一场的状态带过去。
+
+### 新增：比赛讨论区
+
+- 比赛面板底部新增讨论区：帖子按 `parentId` 嵌套（最多三层），自己发的帖子可以删。
+- 接口是站点通用的评论系统：`GET /comment/thread?path=contest/{id}&loadAll=1` 读，
+  `POST /comment/post`（`path`/`parent`/`content`/`broadcast`）写，`POST /comment/delete/{id}` 删。
+- 支持回复（点帖子上的「回复」带 `parent`）、刷新只换帖子列表（不丢草稿）、`Ctrl+Enter` 发表。
+- 匿名可读；发表需要登录，错误按 i18nKey 翻成人话（「请先登录 VJudge」「内容过短，别刷屏」等）。
+
 ## 1.3.9
 
 ### 新增：题面 / 文章里的代码块带语法高亮了

@@ -116,6 +116,20 @@ class Store {
     return this.memento.get('vjudge.contestSort', 'running');
   }
 
+  /**
+   * 「随机来一道题」上次用的条件（OJ + 难度）。
+   * 存起来是为了命令里能直接给一个「再来一道」——不用每次重新点两遍菜单。
+   */
+  getRandomFilter() {
+    const value = this.memento.get('vjudge.randomFilter');
+    if (!value || typeof value !== 'object' || !value.oj) return null;
+    return value;
+  }
+
+  async setRandomFilter(filter) {
+    await this.memento.update('vjudge.randomFilter', filter || undefined);
+  }
+
   /** 上次用哪个 OJ 账号提交（按 OJ 分开记，提交方式「自己的账号」用） */
   getOwnAccount(oj) {
     const map = this.memento.get('vjudge.ownAccounts', {});

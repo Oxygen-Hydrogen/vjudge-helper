@@ -126,7 +126,9 @@ function buildStandings(contest, rank, options = {}) {
       inferred: true,
     }));
   }
-  // 只统计比赛时间内的提交：赛后的「补题」不计入榜单（和 VJudge 默认视图一致）
+  // 只统计比赛时间内的提交：赛后的「补题」默认不计入榜单（和 VJudge 默认视图一致）；
+  // 打开 includePractice 后连赛后补题一起算，并在单元格上标 †。
+  const includePractice = !!options.includePractice;
   const elapsedSeconds =
     begin > 0 ? Math.max(0, Math.round((Math.min(now, end || now) - begin) / 1000)) : Number.POSITIVE_INFINITY;
   const horizon = Math.min(elapsedSeconds, lengthSeconds || Number.POSITIVE_INFINITY);
@@ -146,7 +148,14 @@ function buildStandings(contest, rank, options = {}) {
         lastAcSeconds: Number.POSITIVE_INFINITY,
         lastSubmitSeconds: 0,
         submitCount: 0,
-        cells: problemList.map(() => ({ best: 0, acSeconds: null, fails: 0, attempts: 0, lastSeconds: 0 })),
+        cells: problemList.map(() => ({
+          best: 0,
+          acSeconds: null,
+          fails: 0,
+          attempts: 0,
+          lastSeconds: 0,
+          upsolved: false,
+        })),
       });
     }
     return rows.get(id);
@@ -155,16 +164,21 @@ function buildStandings(contest, rank, options = {}) {
   Object.keys(participants).forEach((pid) => ensure(pid));
 
   const ordered = submissions
-    .map((raw) => ({
-      pid: String(raw[0]),
-      index: num(raw[1], -1),
-      status: num(raw[2], 0),
-      seconds: Math.max(0, num(raw[3], 0)),
-      pts: raw[4] === undefined || raw[4] === null ? null : Number(raw[4]),
-      fullPts: raw[5] === undefined || raw[5] === null ? null : Number(raw[5]),
-    }))
+    .map((raw) => {
+      const seconds = Math.max(0, num(raw[3], 0));
+      return {
+        pid: String(raw[0]),
+        index: num(raw[1], -1),
+        status: num(raw[2], 0),
+        seconds,
+        // 超出比赛时长的提交＝赛后补题
+        practice: lengthSeconds > 0 && seconds > lengthSeconds,
+        pts: raw[4] === undefined || raw[4] === null ? null : Number(raw[4]),
+        fullPts: raw[5] === undefined || raw[5] === null ? null : Number(raw[5]),
+      };
+    })
     .filter((s) => s.index >= 0 && s.index < problemList.length)
-    .filter((s) => s.seconds <= horizon)
+    .filter((s) => includePractice || s.seconds <= horizon)
     .sort((a, b) => a.seconds - b.seconds || a.status - b.status);
 
   for (const sub of ordered) {
@@ -190,7 +204,11 @@ function buildStandings(contest, rank, options = {}) {
 
     if (fraction > cell.best) {
       cell.best = fraction;
-      if (fraction >= 1) cell.acSeconds = sub.seconds;
+      if (fraction >= 1) {
+        cell.acSeconds = sub.seconds;
+        // 这题的 AC 是赛后补出来的
+        cell.upsolved = !!sub.practice;
+      }
     }
     if (status !== 1 && cell.best < 1) cell.fails += 1;
   }
@@ -269,6 +287,7 @@ function buildStandings(contest, rank, options = {}) {
     partialScore,
     sumTime,
     penaltyPerFail,
+    includePractice,
     myRank,
     myParticipantId: myId,
     contestId: String((contest && contest.id) || source.id || ''),

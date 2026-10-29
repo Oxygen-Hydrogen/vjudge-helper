@@ -150,7 +150,13 @@ console.log('\n比赛面板里嵌了榜单区块');
   const view = renderContest(contest, { standings, pollInterval: 5 });
   pass('有 vj-standings-inner 容器', /id="vj-standings-inner"/.test(view.body));
   pass('写了自动刷新间隔', /每 5 秒自动刷新/.test(view.body));
-  pass('有倒计时节点', /data-vj-countdown/.test(view.body));
+  // 倒计时只在「还没结束」时渲染，所以这里必须用一场进行中的比赛，
+  // 不能用固定日期的 makeContest（写死 2026-10-28，过了那天这条断言就会假红）
+  const liveContest = makeContest({
+    data: { begin: Date.now() - 3600 * 1000, end: Date.now() + 3600 * 1000 },
+  });
+  const liveView = renderContest(liveContest, { standings, pollInterval: 5 });
+  pass('有倒计时节点', /data-vj-countdown/.test(liveView.body));
   pass('按钮里有「刷新榜单」', view.actions.some((a) => a.id === 'rankRefresh'));
 }
 

@@ -359,7 +359,7 @@ class VJudgeTreeProvider {
       mk('open-contest', '打开比赛…', 'trophy', 'vjudgeHelper.openContest'),
       mk('open-group', '打开团队…', 'organization', 'vjudgeHelper.openGroup'),
       mk('search-group', '搜索团队…', 'search', 'vjudgeHelper.searchGroup'),
-      mk('random', '随机来一道题', 'lightbulb', 'vjudgeHelper.openRandomProblem'),
+      mk('random', '随机来一道题…', 'lightbulb', 'vjudgeHelper.openRandomProblem'),
       mk('login', '登录 / 更新凭据', 'account', 'vjudgeHelper.login'),
       mk('check', '检查登录状态', 'check', 'vjudgeHelper.checkLogin'),
       mk('home', '打开 VJudge 首页', 'globe', 'vjudgeHelper.openHome'),

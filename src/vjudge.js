@@ -169,6 +169,92 @@ function stripTags(s) {
   return String(s).replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
 }
 
+/**
+ * 解析 /message 页面里的会话列表。
+ *
+ * 站点这页是**服务端渲染**的（没有 JSON 接口），结构固定：
+ *   <li class="list-group-item contact active" data-contact-id="1041388">
+ *     <img src="…"><span><b>_0_px</b></span>(<span class="msg-last-time">78 分钟前</span>)<br>
+ *     <span class="msg-preview">…</span>
+ *   </li>
+ */
+function parseMessageContacts(html) {
+  const src = String(html || '');
+  const out = [];
+  const re = /<li\b([^>]*)>([\s\S]*?)<\/li>/gi;
+  let m;
+  while ((m = re.exec(src))) {
+    const attrs = m[1];
+    const body = m[2];
+    if (!/\bcontact\b/.test(attrs)) continue;
+    const idMatch = /data-contact-id\s*=\s*["']?(\d+)["']?/i.exec(attrs);
+    if (!idMatch) continue;
+    const nameMatch = /<b>([\s\S]*?)<\/b>/i.exec(body);
+    const timeMatch = /class\s*=\s*["'][^"']*msg-last-time[^"']*["'][^>]*>([\s\S]*?)</i.exec(body);
+    const previewMatch = /class\s*=\s*["'][^"']*msg-preview[^"']*["'][^>]*>([\s\S]*?)<\/span>/i.exec(body);
+    out.push({
+      id: idMatch[1],
+      name: decodeEntities(stripTags(nameMatch ? nameMatch[1] : '')).trim(),
+      timeText: decodeEntities(stripTags(timeMatch ? timeMatch[1] : '')).trim(),
+      preview: decodeEntities(stripTags(previewMatch ? previewMatch[1] : '')).trim(),
+      unread: /class\s*=\s*["'][^"']*\bunread\b/.test(attrs),
+      active: /class\s*=\s*["'][^"']*\bactive\b/.test(attrs),
+    });
+  }
+  return out;
+}
+
+/** 当前登录的用户名（/message 页面用一个 hidden input 带出来） */
+function extractVisitorName(html) {
+  const m = /id\s*=\s*["']visitor_username["'][^>]*value\s*=\s*["']([^"']*)["']/i.exec(String(html || ''));
+  return m ? decodeEntities(m[1]).trim() : '';
+}
+
+/** 私信 / 评论接口的错误都是 {error:{i18nKey,i18nArgs}}，翻成人话 */
+const FEEDBACK_ERROR_TEXT = {
+  'message.error.blocked': '这个会话已被拉黑，消息没有发出去',
+  'message.error.empty': '消息不能为空',
+  'message.error.too_long': '消息太长了',
+  'message.error.incomplete': '消息内容不完整（Markdown 代码块没闭合？），补全后再发',
+  'message.error.login_required': '请先登录 VJudge',
+  'message.error.contact_not_found': '收件人不存在',
+  'message.error.self_not_allowed': '不能给自己发私信',
+  'message.error.self_block_not_allowed': '不能拉黑自己',
+  'message.error.system_block_not_allowed': '系统账号不能被拉黑',
+  'comment.error.login_required': '请先登录 VJudge',
+  'comment.error.retry_later': '操作太频繁了，稍后再试',
+  'comment.error.email_confirm_required': '需要先完成邮箱验证才能发评论',
+  'comment.error.content_too_short': '内容过短，别刷屏',
+  'comment.error.content_too_long': '内容过长',
+  'comment.error.content_empty': '内容不能为空',
+  'comment.error.thread_path_illegal': '讨论区路径不合法',
+  'comment.error.parent_post_invalid': '要回复的那条评论不存在',
+  'comment.error.reply_too_deep': '回复层级太深，直接回复上层吧',
+  'comment.error.post_not_found': '评论不存在',
+  'comment.error.delete_forbidden': '没有权限删除这条评论',
+  'comment.error.edit_forbidden': '没有权限编辑这条评论',
+};
+
+function feedbackErrorText(error) {
+  if (!error) return '';
+  if (typeof error === 'string') return stripTags(error);
+  const key = String(error.i18nKey || error.key || '');
+  if (FEEDBACK_ERROR_TEXT[key]) return FEEDBACK_ERROR_TEXT[key];
+  const guess = /login|auth|session/i.test(key)
+    ? '请先登录 VJudge'
+    : /too_long/i.test(key)
+      ? '内容过长'
+      : /empty/i.test(key)
+        ? '内容不能为空'
+        : /blocked/i.test(key)
+          ? '对方已拉黑你，或你已拉黑对方'
+          : '';
+  if (guess) return guess;
+  const html = error.html || error.message || '';
+  const text = html ? stripTags(htmlMessage(html)) : '';
+  return text || key || '操作失败';
+}
+
 /** 把相对路径的图片补成绝对地址，否则 webview 里加载不出来 */
 function absolutizeHtml(html, baseUrl) {
   if (!html) return html;
@@ -501,6 +587,27 @@ class VJudgeClient {
     }
   }
 
+  /**
+   * 表单 POST（私信 / 评论这些接口都是 jQuery `$.post`，字段走 x-www-form-urlencoded）。
+   * 和浏览器相比只多做了两件事：显式带 X-Requested-With 和 Origin，省得被当成爬虫。
+   */
+  async httpPost(pathname, fields, referer) {
+    const url = pathname.startsWith('http') ? pathname : `${this.baseUrl}${pathname}`;
+    return request(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+        Accept: 'application/json, text/javascript, */*; q=0.01',
+        'X-Requested-With': 'XMLHttpRequest',
+        Referer: referer ? `${this.baseUrl}${referer}` : `${this.baseUrl}/`,
+        Origin: this.baseUrl,
+      },
+      body: fields === null || fields === undefined ? '' : formEncode(fields),
+      jar: this.session.jar,
+      timeout: this.session.timeout,
+    });
+  }
+
   /* --------------------------- 题目 --------------------------- */
 
   /**
@@ -658,15 +765,103 @@ class VJudgeClient {
     return extractStatementFromHtml(res.body || '') || '';
   }
 
-  /** 随机题目：访问 /problem/random 后从重定向地址里取出题号 */
+  /**
+   * 随机题目：访问 /problem/random 后从重定向地址里取出题号。
+   *
+   * 两个坑（v1.4.1 修）：
+   *  1. 没登录时 VJudge 会**直接返回登录页 HTML**（HTTP 200，URL 还停在 /problem/random），
+   *     以前这里会把 URL 里的 `random` 当成题号，于是面板显示「random - random / 拿不到题面」。
+   *  2. 所以不能只看 URL，还要确认拿到的确实是题目页（有 dataJson），并且题号不是 `random`。
+   *
+   * 想要「按 OJ / 难度随机」请用 src/random.js 的 pickRandom()，别在这条路上加参数。
+   */
   async randomProblem() {
     const res = await this.httpGet('/problem/random');
     this.assertNotLoginWall(res);
-    const match = /\/problem\/([A-Za-z0-9_.%+-]+)\s*(?:[?#]|$)/.exec(res.url || '');
-    if (!match) {
+    const html = res.body || '';
+    const finalUrl = String(res.url || '');
+
+    if (!/name="dataJson"|id="problem-content"|prob-descs/i.test(html)) {
+      throw new LoginRequiredError(
+        this.session.hasCredentials
+          ? 'VJudge 这次回的是登录页（登录状态可能已失效），请重新登录后再随机'
+          : '随机题目需要先登录 VJudge（题面只对登录用户开放）'
+      );
+    }
+
+    const match = /\/problem\/([^/?#]+)\s*(?:[?#]|$)/.exec(finalUrl);
+    const key = match ? decodeURIComponent(match[1]) : '';
+    if (!key || key.toLowerCase() === 'random') {
       throw new Error('VJudge 没有返回随机题目（可能需要登录，或该功能暂时不可用）');
     }
-    return decodeURIComponent(match[1]);
+    return key;
+  }
+
+  /* --------------------- 题目列表（随机抽题用） --------------------- */
+
+  /**
+   * VJudge 题目列表的后台接口（就是 /problem 页那个 DataTables 的 ajax）。
+   *
+   * 注意它**要求登录**：匿名请求也返回 200，但 `data` 是空数组、
+   * `recordsTotal` 是假的 9999999。见到这个假总数就说明没登录，直接抛登录错误，
+   * 别拿它当题目总数去抽偏移量。
+   *
+   * @param {Record<string,string>} params start / length / OJId …
+   */
+  async problemQuery(params = {}) {
+    const query = new URLSearchParams({
+      draw: '1',
+      start: '0',
+      length: '1',
+      OJId: '',
+      probNum: '',
+      title: '',
+      source: '',
+      category: '',
+      'order[0][column]': '0',
+      'order[0][dir]': 'asc',
+      'search[value]': '',
+      ...params,
+    }).toString();
+    const res = await this.httpGet(`/problem/data?${query}`, {
+      Accept: 'application/json, text/javascript, */*; q=0.01',
+      Referer: `${this.baseUrl}/problem`,
+    });
+    this.assertNotLoginWall(res);
+
+    let json = null;
+    try {
+      json = JSON.parse(res.body);
+    } catch {
+      json = null;
+    }
+    if (!json || !Array.isArray(json.data)) {
+      throw new Error('VJudge 题目列表接口返回了意料之外的内容（站点可能改版了）');
+    }
+
+    const total = Number(json.recordsTotal);
+    const rows = json.data;
+    if (!rows.length || !Number.isFinite(total) || total <= 0 || total >= 9999999) {
+      throw new LoginRequiredError(
+        this.session.hasCredentials
+          ? 'VJudge 没有返回题目列表（登录状态可能已失效），请重新登录后再试'
+          : '按 OJ 随机抽题要用 VJudge 的题目列表，它只对登录用户可见'
+      );
+    }
+    return { total, rows };
+  }
+
+  /** 某个 OJ 在 VJudge 上收录了多少题 */
+  async problemCountInOj(oj) {
+    const { total } = await this.problemQuery({ OJId: oj || '', length: '1' });
+    return total;
+  }
+
+  /** 取某个 OJ 题库里第 offset 条（随机抽题用） */
+  async problemAtOffset(oj, offset) {
+    const start = Math.max(0, Math.floor(Number(offset) || 0));
+    const { rows } = await this.problemQuery({ OJId: oj || '', start: String(start), length: '1' });
+    return rows[0] || null;
   }
 
   /* --------------------------- 提交 / 评测 --------------------------- */
@@ -1197,8 +1392,264 @@ class VJudgeClient {
     return this._myUserId;
   }
 
-  /* --------------------------- 文章 --------------------------- */
+  /* --------------------------- 私信 --------------------------- */
 
+  /**
+   * 私信会话列表。
+   *
+   * 只有「拉取会话 / 发送 / 删除 / 拉黑」四个动作是 AJAX（见 fetchConversation 等），
+   * 会话列表本身是服务端渲染的 HTML，所以这里只能解析 DOM。
+   */
+  async fetchMessageContacts() {
+    const res = await this.httpGet('/message', { Referer: `${this.baseUrl}/message` });
+    this.assertNotLoginWall(res);
+
+    const html = String(res.body || '');
+    const contacts = parseMessageContacts(html);
+    if (!contacts.length) {
+      // 页面里一条会话都没有：可能是真的空，也可能是登录墙换了形状
+      if (/id\s*=\s*["']contacts-list["']/i.test(html)) {
+        return { contacts: [], me: extractVisitorName(html), url: `${this.baseUrl}/message` };
+      }
+      throw new LoginRequiredError(
+        this.session.hasCredentials
+          ? 'VJudge 登录状态可能已失效，请重新登录后再看私信'
+          : '私信需要登录 VJudge 才能查看，请先执行「VJudge: 登录 / 更新凭据」'
+      );
+    }
+    return { contacts, me: extractVisitorName(html), url: `${this.baseUrl}/message` };
+  }
+
+  /**
+   * 某个联系人的会话内容。
+   * POST /message/conversation/{contactId}  body: start=<跳过最近多少条>
+   * → { messages: [{id, author, content, time}], blockedByMe, canBlock }
+   *
+   * start=0 是最新的一屏（20 条），网页上「查看更早消息」每次 +20。
+   */
+  async fetchConversation(contactId, options = {}) {
+    const id = String(contactId == null ? '' : contactId).trim();
+    if (!id) throw new Error('缺少联系人 ID');
+    const start = Math.max(0, Math.round(Number(options.start) || 0));
+
+    const res = await this.httpPost(`/message/conversation/${encodeURIComponent(id)}`, { start }, '/message');
+    this.assertNotLoginWall(res);
+
+    let payload = null;
+    try {
+      payload = JSON.parse(res.body);
+    } catch {
+      payload = null;
+    }
+    if (!payload || typeof payload !== 'object') {
+      throw new Error(`拉取会话失败（HTTP ${res.status}）`);
+    }
+    if (payload.error) throw new Error(feedbackErrorText(payload.error));
+    // 未登录时这个接口回的是一个空对象 `{}`（不是 401），只能靠缺字段判断
+    if (!Array.isArray(payload.messages)) {
+      throw new LoginRequiredError('拉取会话需要登录 VJudge，请先执行「VJudge: 登录 / 更新凭据」');
+    }
+
+    const messages = (Array.isArray(payload.messages) ? payload.messages : []).map((raw) => {
+      const item = raw || {};
+      // time 有两种形态：毫秒时间戳（评论接口）和字符串秒（老接口），都归一到毫秒
+      let time = Number(item.time);
+      if (!Number.isFinite(time)) time = 0;
+      if (time > 0 && time < 1e11) time *= 1000;
+      return {
+        id: String(item.id == null ? '' : item.id),
+        author: String(item.author || '').trim(),
+        content: String(item.content == null ? '' : item.content),
+        time,
+      };
+    });
+
+    return {
+      contactId: id,
+      start,
+      messages,
+      blockedByMe: payload.blockedByMe === true,
+      canBlock: payload.canBlock !== false,
+    };
+  }
+
+  /** 发送私信：POST /message/post  {contactId, content} */
+  async sendMessage(contactId, content) {
+    const id = String(contactId == null ? '' : contactId).trim();
+    if (!id) throw new Error('缺少联系人 ID');
+    const text = String(content == null ? '' : content);
+    if (!text.trim()) throw new Error('消息不能为空');
+
+    const res = await this.httpPost('/message/post', { contactId: id, content: text }, '/message');
+    this.assertNotLoginWall(res);
+
+    let payload = null;
+    try {
+      payload = JSON.parse(res.body);
+    } catch {
+      payload = null;
+    }
+    if (payload && payload.error) throw new Error(feedbackErrorText(payload.error));
+    if (!payload) throw new Error(`发送失败（HTTP ${res.status}）`);
+    log.write('message.sent', { contactId: id, length: text.length });
+    return true;
+  }
+
+  /** 删除一条私信：POST /message/delete?id=xxx（参数在 query 上，不在 body） */
+  async deleteMessage(messageId) {
+    const id = String(messageId == null ? '' : messageId).trim();
+    if (!id) throw new Error('缺少消息 ID');
+
+    const res = await this.httpPost(`/message/delete?id=${encodeURIComponent(id)}`, null, '/message');
+    this.assertNotLoginWall(res);
+
+    let payload = null;
+    try {
+      payload = JSON.parse(res.body);
+    } catch {
+      payload = null;
+    }
+    if (payload && payload.error) throw new Error(feedbackErrorText(payload.error));
+    return true;
+  }
+
+  /** 拉黑 / 解除拉黑：POST /message/block  {contactId, blocked} */
+  async setContactBlocked(contactId, blocked) {
+    const id = String(contactId == null ? '' : contactId).trim();
+    if (!id) throw new Error('缺少联系人 ID');
+
+    const res = await this.httpPost(
+      '/message/block',
+      { contactId: id, blocked: blocked ? 'true' : 'false' },
+      '/message'
+    );
+    this.assertNotLoginWall(res);
+
+    let payload = null;
+    try {
+      payload = JSON.parse(res.body);
+    } catch {
+      payload = null;
+    }
+    if (payload && payload.error) throw new Error(feedbackErrorText(payload.error));
+    return blocked === true;
+  }
+
+  /* --------------------------- 讨论区 --------------------------- */
+
+  /**
+   * 讨论区（评论线程）。
+   *
+   * GET /comment/thread?path=<type>/<id>&loadAll=1
+   *   path 形如 article/1、contest/863093、problem/CodeForces-1A
+   * → {commentNumber, allowBroadcast, isManager, hasMore,
+   *    posts: [{id, parentId, author, authorId, content, time(ms), topIndex, deleted, spam, likeCnt, dislikeCnt}]}
+   *
+   * 匿名可读；发帖要登录。
+   */
+  async fetchDiscussion(threadPath, options = {}) {
+    const path = String(threadPath == null ? '' : threadPath).trim().replace(/^\/+/, '');
+    if (!path || !/^[a-z]+\/./i.test(path)) throw new Error(`讨论区路径不合法：${threadPath}`);
+
+    const res = await this.httpGet(
+      `/comment/thread?path=${encodeURIComponent(path)}&loadAll=${options.loadAll === false ? 0 : 1}&t=${Date.now()}`,
+      { Referer: `${this.baseUrl}/${path}` }
+    );
+    this.assertNotLoginWall(res);
+
+    let payload = null;
+    try {
+      payload = JSON.parse(res.body);
+    } catch {
+      payload = null;
+    }
+    if (!payload || typeof payload !== 'object') {
+      throw new Error(`读取讨论区失败（HTTP ${res.status}）`);
+    }
+    if (payload.error) throw new Error(feedbackErrorText(payload.error));
+
+    const posts = (Array.isArray(payload.posts) ? payload.posts : []).map((raw) => {
+      const item = raw || {};
+      let time = Number(item.time);
+      if (!Number.isFinite(time)) time = 0;
+      if (time > 0 && time < 1e11) time *= 1000;
+      return {
+        id: String(item.id == null ? '' : item.id),
+        parentId: String(item.parentId == null ? '0' : item.parentId),
+        author: String(item.author || '').trim(),
+        authorId: item.authorId == null ? '' : String(item.authorId),
+        content: String(item.content == null ? '' : item.content),
+        time,
+        topIndex: Number(item.topIndex) || 0,
+        deleted: item.deleted === true,
+        spam: item.spam === true,
+        likeCnt: Number(item.likeCnt) || 0,
+        dislikeCnt: Number(item.dislikeCnt) || 0,
+      };
+    });
+
+    return {
+      path,
+      threadId: payload.id == null ? '' : String(payload.id),
+      commentNumber: Number(payload.commentNumber) || 0,
+      allowBroadcast: payload.allowBroadcast !== false,
+      isManager: payload.isManager === true,
+      hasMore: payload.hasMore === true,
+      posts,
+      url: `${this.baseUrl}/${path.replace(/^([a-z]+)\//i, '$1/')}`,
+    };
+  }
+
+  /** 发评论 / 回复：POST /comment/post  {path, parent, content, broadcast} */
+  async postComment({ path, content, parent = 0, broadcast = true }) {
+    const threadPath = String(path == null ? '' : path).trim().replace(/^\/+/, '');
+    if (!threadPath) throw new Error('缺少讨论区路径');
+    const text = String(content == null ? '' : content);
+    if (!text.trim()) throw new Error('内容不能为空');
+
+    const res = await this.httpPost(
+      '/comment/post',
+      {
+        path: threadPath,
+        parent: String(parent || 0),
+        content: text,
+        broadcast: broadcast ? 'true' : 'false',
+      },
+      `/${threadPath.split('/')[0]}`
+    );
+    this.assertNotLoginWall(res);
+
+    let payload = null;
+    try {
+      payload = JSON.parse(res.body);
+    } catch {
+      payload = null;
+    }
+    if (payload && payload.error) throw new Error(feedbackErrorText(payload.error));
+    if (!payload) throw new Error(`发表失败（HTTP ${res.status}）`);
+    log.write('comment.posted', { path: threadPath, parent: String(parent || 0), length: text.length });
+    return payload;
+  }
+
+  /** 删除自己发的评论：POST /comment/delete/{postId} */
+  async deleteComment(postId) {
+    const id = String(postId == null ? '' : postId).trim();
+    if (!id) throw new Error('缺少评论 ID');
+
+    const res = await this.httpPost(`/comment/delete/${encodeURIComponent(id)}`, null, '/comment');
+    this.assertNotLoginWall(res);
+
+    let payload = null;
+    try {
+      payload = JSON.parse(res.body);
+    } catch {
+      payload = null;
+    }
+    if (payload && payload.error) throw new Error(feedbackErrorText(payload.error));
+    return true;
+  }
+
+  /* --------------------------- 文章 --------------------------- */
   async fetchArticle(id) {
     const cacheKey = `article:${id}`;
     const cached = this.cacheGet(cacheKey);
@@ -1725,5 +2176,8 @@ module.exports = {
   extractDescriptionPayload,
   buildGroup,
   normalizeGroupKey,
+  parseMessageContacts,
+  extractVisitorName,
+  feedbackErrorText,
   toGroupCard,
 };
