@@ -1,0 +1,808 @@
+:root {
+  --vj-border: var(--vscode-panel-border, rgba(128, 128, 128, 0.28));
+  --vj-muted: var(--vscode-descriptionForeground, #6b7280);
+  --vj-accent: var(--vscode-textLink-foreground, #0b6bcb);
+  --vj-accent-bg: var(--vscode-button-background, #0b6bcb);
+  --vj-accent-fg: var(--vscode-button-foreground, #ffffff);
+  --vj-code-bg: var(--vscode-textCodeBlock-background, rgba(128, 128, 128, 0.12));
+  --vj-card-bg: var(--vscode-editorWidget-background, rgba(128, 128, 128, 0.08));
+  --vj-fg: var(--vscode-editor-foreground, #1f2328);
+  --vj-bg: var(--vscode-editor-background, #ffffff);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--vj-bg);
+  color: var(--vj-fg);
+  font-family: var(--vscode-font-family, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif);
+  font-size: var(--vscode-font-size, 14px);
+  line-height: 1.65;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+/* ---------------- header ---------------- */
+
+.vj-header {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  padding: 14px 22px 12px;
+  border-bottom: 1px solid var(--vj-border);
+  background: var(--vj-bg);
+  backdrop-filter: blur(6px);
+}
+
+/* 标题和按钮同一行：标题让位、按钮不换行叠到标题上（题号长的题名以前会被按钮压住） */
+.vj-header__row {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.vj-titlebar {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.vj-title {
+  margin: 0;
+  font-size: 1.32rem;
+  font-weight: 650;
+  line-height: 1.35;
+  letter-spacing: 0.1px;
+  word-break: break-word;
+}
+
+.vj-subtitle {
+  color: var(--vj-muted);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.vj-actions {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+  max-width: 62%;
+}
+
+.vj-btn {
+  border: 1px solid var(--vj-border);
+  background: transparent;
+  color: var(--vj-fg);
+  padding: 4px 10px;
+  border-radius: 5px;
+  font-size: 0.8rem;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease;
+  white-space: nowrap;
+}
+
+.vj-btn:hover {
+  background: var(--vj-card-bg);
+  border-color: var(--vj-accent);
+}
+
+.vj-btn:active {
+  transform: translateY(1px);
+}
+
+.vj-btn--primary {
+  background: var(--vj-accent-bg);
+  color: var(--vj-accent-fg);
+  border-color: transparent;
+}
+
+.vj-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.vj-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--vj-border);
+  background: var(--vj-card-bg);
+  font-size: 0.76rem;
+  color: var(--vj-muted);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vj-chip b {
+  color: var(--vj-fg);
+  font-weight: 600;
+}
+
+.vj-chip--ok b {
+  color: var(--vscode-testing-iconPassed, #1a7f37);
+}
+
+.vj-chip--warn b {
+  color: var(--vscode-editorWarning-foreground, #b8860b);
+}
+
+/* ---------------- body ---------------- */
+
+.vj-body {
+  flex: 1 1 auto;
+  padding: 20px 22px 60px;
+  max-width: 980px;
+  width: 100%;
+}
+
+.vj-markdown > *:first-child {
+  margin-top: 0;
+}
+
+.vj-markdown h1,
+.vj-markdown h2,
+.vj-markdown h3,
+.vj-markdown h4,
+.vj-markdown h5 {
+  margin: 1.6em 0 0.6em;
+  font-weight: 650;
+  line-height: 1.3;
+}
+
+.vj-markdown h1 {
+  font-size: 1.4rem;
+  border-bottom: 1px solid var(--vj-border);
+  padding-bottom: 6px;
+}
+
+.vj-markdown h2 {
+  font-size: 1.2rem;
+  border-bottom: 1px solid var(--vj-border);
+  padding-bottom: 5px;
+}
+
+.vj-markdown h3 {
+  font-size: 1.05rem;
+}
+
+.vj-markdown p {
+  margin: 0.7em 0;
+}
+
+.vj-markdown a {
+  color: var(--vj-accent);
+  text-decoration: none;
+}
+
+.vj-markdown a:hover {
+  text-decoration: underline;
+}
+
+.vj-markdown ul,
+.vj-markdown ol {
+  padding-left: 1.6em;
+  margin: 0.6em 0;
+}
+
+.vj-markdown li {
+  margin: 0.25em 0;
+}
+
+.vj-markdown blockquote {
+  margin: 0.8em 0;
+  padding: 0.2em 1em;
+  border-left: 3px solid var(--vj-border);
+  color: var(--vj-muted);
+}
+
+.vj-markdown hr {
+  border: none;
+  border-top: 1px solid var(--vj-border);
+  margin: 1.6em 0;
+}
+
+.vj-markdown code {
+  font-family: var(--vscode-editor-font-family, Consolas, "Courier New", monospace);
+  font-size: 0.88em;
+  background: var(--vj-code-bg);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+
+.vj-markdown pre,
+.code-block {
+  background: var(--vj-code-bg);
+  border: 1px solid var(--vj-border);
+  border-radius: 6px;
+  padding: 12px 14px;
+  overflow-x: auto;
+  line-height: 1.5;
+  margin: 0.9em 0;
+}
+
+.vj-markdown pre code {
+  background: transparent;
+  padding: 0;
+  font-size: 0.86em;
+  /* 代码块里的空白和换行必须原样保留（有的题面把代码塞在 <code> 里） */
+  white-space: pre;
+}
+
+/* ---------------------------------------------------------------- 代码高亮
+   配色抄 VS Code 的 Dark+ / Light+：webview 拿不到主题的 token 颜色（没有对应的
+   CSS 变量），所以在 :root 放浅色一套，body.vscode-dark 覆盖成深色一套。
+   只给注释/字符串/数字/关键字/类型/函数上色，运算符保持正文色。 */
+:root {
+  --vj-tok-kw: #0000ff;
+  --vj-tok-typ: #267f99;
+  --vj-tok-fn: #795e26;
+  --vj-tok-str: #a31515;
+  --vj-tok-num: #098658;
+  --vj-tok-com: #008000;
+  --vj-tok-pre: #af00db;
+}
+
+body.vscode-dark {
+  --vj-tok-kw: #569cd6;
+  --vj-tok-typ: #4ec9b0;
+  --vj-tok-fn: #dcdcaa;
+  --vj-tok-str: #ce9178;
+  --vj-tok-num: #b5cea8;
+  --vj-tok-com: #6a9955;
+  --vj-tok-pre: #c586c0;
+}
+
+.vj-tok-kw {
+  color: var(--vj-tok-kw);
+}
+.vj-tok-typ {
+  color: var(--vj-tok-typ);
+}
+.vj-tok-fn {
+  color: var(--vj-tok-fn);
+}
+.vj-tok-str {
+  color: var(--vj-tok-str);
+}
+.vj-tok-num {
+  color: var(--vj-tok-num);
+}
+.vj-tok-com {
+  color: var(--vj-tok-com);
+}
+.vj-tok-pre {
+  color: var(--vj-tok-pre);
+}
+
+/* 代码块用等宽字体、稍小一点；tab 按 4 格显示（有些题解代码是 tab 缩进） */
+.vj-markdown pre.vj-code,
+.vj-statement pre.vj-code {
+  tab-size: 4;
+  -moz-tab-size: 4;
+}
+
+.vj-markdown pre.vj-code code,
+.vj-statement pre.vj-code code {
+  font-family: var(--vscode-editor-font-family, Consolas, "Courier New", monospace);
+  line-height: 1.55;
+}
+
+.vj-markdown img {
+  max-width: 100%;
+  height: auto;
+  background: #fff;
+  border-radius: 4px;
+}
+
+.vj-markdown table,
+.vj-problem-table table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 1em 0;
+  font-size: 0.9em;
+}
+
+.vj-markdown th,
+.vj-markdown td,
+.vj-problem-table th,
+.vj-problem-table td {
+  border: 1px solid var(--vj-border);
+  padding: 6px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.vj-markdown th,
+.vj-problem-table th {
+  background: var(--vj-card-bg);
+  font-weight: 600;
+}
+
+/* 题面里常见的分节标题 */
+.vj-statement .section-title,
+.vj-statement .title,
+.vj-statement .vj-desc-title {
+  font-weight: 700;
+  margin-top: 1.4em;
+  font-size: 1.05rem;
+  border-bottom: 1px solid var(--vj-border);
+  padding-bottom: 4px;
+}
+
+.vj-statement .sample-test {
+  border-left: 3px solid var(--vj-border);
+  padding-left: 14px;
+  margin: 1em 0;
+}
+
+/* 样例区：VJudge 的「Input / Output」是 table.vjudge_sample，之前完全裸奔 */
+.vj-statement table.vjudge_sample {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.6em 0 1.2em;
+  font-size: 0.9em;
+}
+
+.vj-statement table.vjudge_sample th {
+  font-weight: 600;
+  font-size: 0.82em;
+  color: var(--vj-muted);
+  text-align: left;
+  padding: 5px 12px;
+  background: var(--vj-card-bg);
+  border: 1px solid var(--vj-border);
+}
+
+.vj-statement table.vjudge_sample td {
+  padding: 0;
+  border: 1px solid var(--vj-border);
+  vertical-align: top;
+}
+
+/* 单元格里的 <pre> 别再套一层大圆角盒子，否则表格看着像空了一大块 */
+.vj-statement table pre,
+.vj-statement table.vjudge_sample pre {
+  margin: 0;
+  padding: 8px 12px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  font-size: 0.86em;
+}
+
+/* Codeforces 题面里的 tex-span 只是预渲染的斜体片段，交给浏览器默认排版就行 */
+.vj-statement .tex-span {
+  font-family: var(--vj-math-font, "Cambria Math", Georgia, serif);
+  white-space: nowrap;
+}
+
+.vj-statement .tex-font-style-tt {
+  font-family: var(--vscode-editor-font-family, Consolas, monospace);
+}
+
+/* ---------------- 附加区块 ---------------- */
+
+.vj-problem-list,
+.vj-problem-table,
+.vj-contest-info {
+  margin-top: 34px;
+  padding-top: 18px;
+  border-top: 1px solid var(--vj-border);
+}
+
+.vj-problem-list h2,
+.vj-problem-table h2 {
+  font-size: 1rem;
+  margin: 0 0 12px;
+  color: var(--vj-muted);
+  font-weight: 600;
+}
+
+.vj-problem-list ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.vj-problem-list li {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 5px 8px;
+  border-radius: 4px;
+}
+
+.vj-problem-list li:hover {
+  background: var(--vj-card-bg);
+}
+
+.vj-prob-title {
+  color: var(--vj-muted);
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vj-prob-stats {
+  font-size: 0.76rem;
+  color: var(--vj-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.vj-prob-link {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.86em;
+  color: var(--vj-accent);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.vj-prob-link:hover {
+  text-decoration: underline;
+}
+
+.vj-index {
+  font-weight: 700;
+  color: var(--vj-muted);
+  width: 2.4em;
+}
+
+.vj-dim {
+  color: var(--vj-muted);
+  font-size: 0.88em;
+}
+
+.vj-state {
+  white-space: nowrap;
+  font-size: 0.88em;
+}
+
+.vj-state--ok {
+  color: var(--vscode-testing-iconPassed, #1a7f37);
+}
+
+.vj-state--warn {
+  color: var(--vscode-editorWarning-foreground, #b8860b);
+}
+
+.vj-state--muted {
+  color: var(--vj-muted);
+}
+
+.vj-kv {
+  display: flex;
+  gap: 14px;
+  padding: 5px 0;
+  border-bottom: 1px dashed var(--vj-border);
+  font-size: 0.9rem;
+}
+
+.vj-kv span {
+  width: 90px;
+  color: var(--vj-muted);
+  flex: 0 0 auto;
+}
+
+/* ---------------- 空状态 ---------------- */
+
+.vj-empty {
+  margin: 28px 0;
+  padding: 26px 24px;
+  border: 1px dashed var(--vj-border);
+  border-radius: 10px;
+  background: var(--vj-card-bg);
+  text-align: center;
+}
+
+.vj-empty__icon {
+  font-size: 1.6rem;
+  color: var(--vj-muted);
+  opacity: 0.7;
+}
+
+.vj-empty__title {
+  font-size: 1.02rem;
+  font-weight: 600;
+  margin-top: 6px;
+}
+
+.vj-empty__detail {
+  color: var(--vj-muted);
+  margin-top: 6px;
+  font-size: 0.9rem;
+}
+
+.vj-empty__hint {
+  margin-top: 12px;
+  font-size: 0.86rem;
+  color: var(--vj-muted);
+}
+
+.vj-empty__hint code {
+  background: var(--vj-code-bg);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+
+.vj-raw {
+  margin-top: 18px;
+  text-align: left;
+}
+
+.vj-raw summary {
+  cursor: pointer;
+  color: var(--vj-muted);
+  font-size: 0.82rem;
+}
+
+.vj-raw pre {
+  max-height: 320px;
+  overflow: auto;
+  font-size: 0.75rem;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* ---------------- footer & toast ---------------- */
+
+.vj-footer {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 22px;
+  border-top: 1px solid var(--vj-border);
+  color: var(--vj-muted);
+  font-size: 0.74rem;
+  word-break: break-all;
+}
+
+.vj-toast {
+  position: fixed;
+  bottom: 26px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--vscode-notifications-background, #333);
+  color: var(--vscode-notifications-foreground, #fff);
+  padding: 8px 18px;
+  border-radius: 999px;
+  font-size: 0.82rem;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25);
+  z-index: 99;
+}
+
+/* 深色主题下公式图片不至于太刺眼 */
+body.vscode-dark .vj-markdown img,
+body.vscode-high-contrast .vj-markdown img {
+  filter: brightness(0.92) contrast(1.05);
+}
+
+@media (max-width: 720px) {
+  .vj-header__row {
+    flex-direction: column;
+    gap: 8px;
+  }
+  .vj-actions {
+    max-width: none;
+    justify-content: flex-start;
+  }
+}
+
+/* ---------------- 实时榜单 ---------------- */
+
+.vj-standings {
+  margin: 22px 0 8px;
+}
+
+.vj-standings__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.vj-standings__head h2 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.vj-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.76rem;
+  color: var(--vscode-testing-iconPassed, #1a7f37);
+  background: color-mix(in srgb, var(--vscode-testing-iconPassed, #1a7f37) 12%, transparent);
+  border-radius: 999px;
+  padding: 2px 9px;
+}
+
+.vj-live.is-off {
+  color: var(--vj-muted);
+  background: var(--vj-card-bg);
+}
+
+.vj-live__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: vj-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes vj-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.35; transform: scale(0.82); }
+}
+
+.vj-btn--mini {
+  padding: 2px 10px;
+  font-size: 0.78rem;
+  min-height: 0;
+  line-height: 1.6;
+}
+
+.vj-st__scroll {
+  overflow-x: auto;
+  border: 1px solid var(--vj-border);
+  border-radius: 8px;
+}
+
+table.vj-st {
+  border-collapse: collapse;
+  width: auto;
+  font-size: 0.82rem;
+  font-variant-numeric: tabular-nums;
+}
+
+table.vj-st th,
+table.vj-st td {
+  border-bottom: 1px solid var(--vj-border);
+  padding: 5px 8px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+table.vj-st thead th {
+  position: sticky;
+  top: 0;
+  background: var(--vj-card-bg);
+  font-weight: 600;
+  font-size: 0.78rem;
+  color: var(--vj-muted);
+  z-index: 1;
+}
+
+table.vj-st tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.vj-st__rank {
+  width: 3em;
+  text-align: right;
+  font-weight: 700;
+}
+
+.vj-st__who {
+  min-width: 150px;
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.vj-st__name {
+  font-weight: 600;
+}
+
+.vj-st__nick {
+  margin-left: 6px;
+  color: var(--vj-muted);
+  font-size: 0.86em;
+}
+
+.vj-st__num {
+  width: 4em;
+  text-align: right;
+}
+
+.vj-st__prob {
+  width: 3.6em;
+  text-align: center;
+  font-weight: 700;
+}
+
+.vj-st__cell {
+  text-align: center;
+  min-width: 3.6em;
+}
+
+.vj-st__cell--ac {
+  color: var(--vscode-testing-iconPassed, #1a7f37);
+  font-weight: 600;
+}
+
+.vj-st__cell--fail {
+  color: var(--vscode-testing-iconFailed, #cf222e);
+  letter-spacing: 1px;
+}
+
+.vj-st__fails {
+  color: var(--vj-muted);
+  margin-left: 2px;
+}
+
+.vj-st__row.is-me {
+  background: color-mix(in srgb, var(--vj-accent) 10%, transparent);
+}
+
+.vj-st__me {
+  display: inline-block;
+  font-size: 0.68rem;
+  color: var(--vj-accent-fg);
+  background: var(--vj-accent);
+  border-radius: 4px;
+  padding: 0 4px;
+  margin-right: 6px;
+  vertical-align: 1px;
+}
+
+.vj-st__mine {
+  margin-top: 8px;
+}
+
+.vj-st__mine table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.vj-st__note {
+  margin: 8px 0 0;
+}
+
+.vj-banner {
+  margin: 0 0 10px;
+  padding: 7px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--vj-border);
+  background: var(--vj-card-bg);
+  font-size: 0.84rem;
+  color: var(--vj-muted);
+}
+
+.vj-banner--warn {
+  border-color: color-mix(in srgb, var(--vscode-editorWarning-foreground, #b8860b) 40%, transparent);
+  color: var(--vscode-editorWarning-foreground, #b8860b);
+  background: color-mix(in srgb, var(--vscode-editorWarning-foreground, #b8860b) 10%, transparent);
+}
+
+/* 比赛面板里 info 块是正文第一个元素，不需要再画分隔线 */
+.vj-body > .vj-contest-info:first-child {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: none;
+}

@@ -1,0 +1,7 @@
+# 统一按 LF 存仓库，避免 Windows 下 CRLF 造成的无意义 diff
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.ico binary
+*.vsix binary

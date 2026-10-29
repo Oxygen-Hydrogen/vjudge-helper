@@ -1,0 +1,368 @@
+{
+  "name": "vjudge-helper",
+  "displayName": "VJudge Helper",
+  "description": "在 VS Code 中一键查看 VJudge 题面、一键提交本地代码并跟踪评测结果，还能打开题目链接、阅读文章、浏览比赛与团队",
+  "version": "1.3.9",
+  "publisher": "vjudge-helper",
+  "license": "MIT",
+  "icon": "media/icon.png",
+  "galleryBanner": {
+    "color": "#0f172a",
+    "theme": "dark"
+  },
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "vjudge",
+    "competitive-programming",
+    "online-judge",
+    "algorithm",
+    "codeforces"
+  ],
+  "main": "./extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "vjudge-helper",
+          "title": "VJudge Helper",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "vjudge-helper": [
+        {
+          "id": "vjudgeHelper.explorer",
+          "name": "VJudge",
+          "icon": "media/icon.svg",
+          "contextualTitle": "VJudge Helper"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "vjudgeHelper.openProblem",
+        "title": "打开题目…",
+        "category": "VJudge",
+        "icon": "$(book)"
+      },
+      {
+        "command": "vjudgeHelper.openProblemFromClipboard",
+        "title": "从剪贴板打开题目",
+        "category": "VJudge",
+        "icon": "$(clippy)"
+      },
+      {
+        "command": "vjudgeHelper.openProblemFromSelection",
+        "title": "用选中文本/当前行打开题目",
+        "category": "VJudge",
+        "icon": "$(symbol-reference)"
+      },
+      {
+        "command": "vjudgeHelper.openContest",
+        "title": "打开比赛…",
+        "category": "VJudge",
+        "icon": "$(trophy)"
+      },
+      {
+        "command": "vjudgeHelper.openArticle",
+        "title": "打开文章…",
+        "category": "VJudge",
+        "icon": "$(file-text)"
+      },
+      {
+        "command": "vjudgeHelper.openGroup",
+        "title": "打开团队…",
+        "category": "VJudge",
+        "icon": "$(organization)"
+      },
+      {
+        "command": "vjudgeHelper.searchGroup",
+        "title": "搜索团队…",
+        "category": "VJudge",
+        "icon": "$(search)"
+      },
+      {
+        "command": "vjudgeHelper.openRandomProblem",
+        "title": "随机来一道题",
+        "category": "VJudge",
+        "icon": "$(lightbulb)"
+      },
+      {
+        "command": "vjudgeHelper.submitCode",
+        "title": "提交当前文件代码",
+        "category": "VJudge",
+        "icon": "$(cloud-upload)"
+      },
+      {
+        "command": "vjudgeHelper.submitToProblem",
+        "title": "提交到指定题目…",
+        "category": "VJudge",
+        "icon": "$(cloud-upload)"
+      },
+      {
+        "command": "vjudgeHelper.openLastSolution",
+        "title": "打开最近一次提交",
+        "category": "VJudge",
+        "icon": "$(history)"
+      },
+      {
+        "command": "vjudgeHelper.showSubmitLog",
+        "title": "查看提交日志（排查提交到哪条通道）",
+        "category": "VJudge",
+        "icon": "$(output)"
+      },
+      {
+        "command": "vjudgeHelper.login",
+        "title": "登录 / 更新凭据",
+        "category": "VJudge",
+        "icon": "$(account)"
+      },
+      {
+        "command": "vjudgeHelper.setCookie",
+        "title": "手动粘贴 Cookie",
+        "category": "VJudge",
+        "icon": "$(key)"
+      },
+      {
+        "command": "vjudgeHelper.checkLogin",
+        "title": "检查登录状态",
+        "category": "VJudge",
+        "icon": "$(check)"
+      },
+      {
+        "command": "vjudgeHelper.logout",
+        "title": "退出登录（清除凭据）",
+        "category": "VJudge",
+        "icon": "$(sign-out)"
+      },
+      {
+        "command": "vjudgeHelper.refresh",
+        "title": "刷新",
+        "category": "VJudge",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "vjudgeHelper.openInBrowser",
+        "title": "在浏览器中打开当前页面",
+        "category": "VJudge",
+        "icon": "$(link-external)"
+      },
+      {
+        "command": "vjudgeHelper.openHome",
+        "title": "打开 VJudge 首页",
+        "category": "VJudge",
+        "icon": "$(home)"
+      },
+      {
+        "command": "vjudgeHelper.clearHistory",
+        "title": "清空浏览历史",
+        "category": "VJudge",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "vjudgeHelper.showMenu",
+        "title": "显示菜单",
+        "category": "VJudge",
+        "icon": "$(menu)"
+      },
+      {
+        "command": "vjudgeHelper.toggleFavorite",
+        "title": "收藏 / 取消收藏",
+        "category": "VJudge",
+        "icon": "$(star)"
+      },
+      {
+        "command": "vjudgeHelper.removeFavorite",
+        "title": "从收藏中移除",
+        "category": "VJudge",
+        "icon": "$(close)"
+      },
+      {
+        "command": "vjudgeHelper.openSettings",
+        "title": "打开设置",
+        "category": "VJudge",
+        "icon": "$(gear)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "vjudgeHelper.openProblem",
+          "when": "view == vjudgeHelper.explorer",
+          "group": "navigation@1"
+        },
+        {
+          "command": "vjudgeHelper.login",
+          "when": "view == vjudgeHelper.explorer",
+          "group": "navigation@2"
+        },
+        {
+          "command": "vjudgeHelper.refresh",
+          "when": "view == vjudgeHelper.explorer",
+          "group": "navigation@3"
+        },
+        {
+          "command": "vjudgeHelper.showMenu",
+          "when": "view == vjudgeHelper.explorer",
+          "group": "1_actions@1"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "vjudgeHelper.openInBrowser",
+          "when": "view == vjudgeHelper.explorer && viewItem =~ /^(problem|contest|article|team|group)$/",
+          "group": "inline@1"
+        },
+        {
+          "command": "vjudgeHelper.toggleFavorite",
+          "when": "view == vjudgeHelper.explorer && viewItem =~ /^(problem|article)$/",
+          "group": "inline@2"
+        },
+        {
+          "command": "vjudgeHelper.removeFavorite",
+          "when": "view == vjudgeHelper.explorer && viewItem == favorite",
+          "group": "inline@1"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "vjudgeHelper.openProblemFromSelection",
+          "group": "vjudge@1"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "vjudgeHelper.removeFavorite",
+          "when": "false"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "vjudgeHelper.openProblemFromSelection",
+        "key": "ctrl+alt+v",
+        "mac": "cmd+alt+v",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "vjudgeHelper.submitCode",
+        "key": "ctrl+alt+enter",
+        "mac": "cmd+alt+enter",
+        "when": "editorTextFocus"
+      }
+    ],
+    "configuration": {
+      "title": "VJudge Helper",
+      "properties": {
+        "vjudgeHelper.baseUrl": {
+          "type": "string",
+          "default": "https://vjudge.net",
+          "description": "VJudge 站点地址，可改成镜像站。"
+        },
+        "vjudgeHelper.username": {
+          "type": "string",
+          "default": "",
+          "description": "VJudge 用户名（仅用于界面显示与自动登录，密码保存在系统钥匙串中）。"
+        },
+        "vjudgeHelper.cookie": {
+          "type": "string",
+          "default": "",
+          "description": "手动填写的 Cookie（JSESSIONID / JSESSlONID）。推荐改用命令「VJudge: 登录 / 更新凭据」或「手动粘贴 Cookie」，它们会存到系统钥匙串而不是明文设置里。"
+        },
+        "vjudgeHelper.openIn": {
+          "type": "string",
+          "enum": [
+            "panel",
+            "browser",
+            "simpleBrowser"
+          ],
+          "enumDescriptions": [
+            "在 VS Code 内的题面面板中打开（推荐）",
+            "用系统默认浏览器打开",
+            "用 VS Code 内置简易浏览器打开"
+          ],
+          "default": "panel",
+          "description": "题目/比赛/文章默认的打开方式。"
+        },
+        "vjudgeHelper.enableMathJax": {
+          "type": "boolean",
+          "default": true,
+          "description": "在题面面板中启用 MathJax 公式渲染（需要联网加载 CDN 脚本）。"
+        },
+        "vjudgeHelper.contestPageSize": {
+          "type": "number",
+          "default": 20,
+          "minimum": 5,
+          "maximum": 100,
+          "description": "侧边栏比赛列表每次拉取的条数。"
+        },
+        "vjudgeHelper.showStatusBar": {
+          "type": "boolean",
+          "default": true,
+          "description": "在状态栏显示 VJudge 快捷入口。"
+        },
+        "vjudgeHelper.requestTimeout": {
+          "type": "number",
+          "default": 20000,
+          "description": "网络请求超时时间（毫秒）。"
+        },
+        "vjudgeHelper.cdnBaseUrl": {
+          "type": "string",
+          "default": "",
+          "description": "题面图片的 CDN 前缀（留空则自动使用 VJudge /util/cfg 下发的地址，通常是 https://cdn.vjudge.net.cn/）。只有图片加载不出来时才需要手动指定。"
+        },
+        "vjudgeHelper.autoRefreshContests": {
+          "type": "boolean",
+          "default": false,
+          "description": "打开侧边栏时自动拉取最新比赛。"
+        },
+        "vjudgeHelper.submitOpen": {
+          "type": "boolean",
+          "default": false,
+          "description": "提交代码时公开源码（对应 VJudge 提交页的 share / open 选项）。"
+        },
+        "vjudgeHelper.submitConfirm": {
+          "type": "boolean",
+          "default": false,
+          "description": "提交前弹窗确认题目、语言和文件名。默认关闭：记住语言后 ctrl+alt+enter 一次就提交。"
+        },
+        "vjudgeHelper.judgeTimeout": {
+          "type": "number",
+          "default": 120,
+          "minimum": 10,
+          "maximum": 600,
+          "description": "等待评测结果的最长时间（秒）。超时只是不再等待，提交通常已经生效，可在「打开最近一次提交」里看结果。"
+        },
+        "vjudgeHelper.standingsInterval": {
+          "type": "number",
+          "default": 5,
+          "minimum": 0,
+          "maximum": 120,
+          "description": "比赛面板的榜单自动刷新间隔（秒）。0 表示不自动刷新；面板切到后台时不会发请求，比赛结束后自动降到 60 秒。"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "check": "node scripts/check-syntax.js",
+    "live": "node test/live-check.js",
+    "test:submit": "node test/submit-check.js",
+    "test:flow": "node test/submit-flow-check.js",
+    "test:contest": "node test/contest-panel-check.js",
+    "test:standings": "node test/standings-check.js",
+    "icon": "python scripts/make-icon.py",
+    "package": "npx --yes @vscode/vsce package --no-dependencies",
+    "publisher": "node scripts/set-publisher.js",
+    "publish": "node scripts/publish.js"
+  },
+  "devDependencies": {}
+}

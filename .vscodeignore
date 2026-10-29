@@ -1,0 +1,13 @@
+.vscode/**
+.git/**
+.github/**
+.workbuddy/**
+.tmp/**
+test/**
+scripts/**
+node_modules/**
+**/*.map
+**/*.ts
+*.vsix
+.gitignore
+MARKETPLACE.md
