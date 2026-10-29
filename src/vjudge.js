@@ -233,6 +233,11 @@ const FEEDBACK_ERROR_TEXT = {
   'comment.error.post_not_found': '评论不存在',
   'comment.error.delete_forbidden': '没有权限删除这条评论',
   'comment.error.edit_forbidden': '没有权限编辑这条评论',
+  // 提交详情（/solution/data?showCode=true）
+  'solution.error.code_login_required': '看提交详情要先登录 VJudge（别人的代码 VJudge 只给一张图片）',
+  'solution.error.code_not_public': '作者把这份代码设成不公开了',
+  'solution.error.crawler_blocked': 'VJudge 把这次请求当成爬虫了，隔几秒再试',
+  'solution.error.login_required': '请先登录 VJudge',
 };
 
 function feedbackErrorText(error) {
@@ -1098,8 +1103,210 @@ class VJudgeClient {
     return payload;
   }
 
+  /* ---------------------------- 提交记录 ---------------------------- */
+
   /**
-   * 轮询到出结果为止。超时把最后一次状态返回（不算失败）。
+   * 提交记录列表。站点的 /status 就是 DataTables 服务端分页，数据走 `GET /status/data`。
+   * **匿名可读**（看别人的提交不需要登录），但 `un` 只认真实用户名，
+   * 传 `mine` 没用（那是前端自己换算的），所以「只看我的」要先拿到自己的用户名。
+   *
+   * 坑：`recordsTotal` 是假的 9999999（和 /problem/data 一个套路），
+   * 判断还有没有下一页只能看本页是否满 `length`。
+   *
+   * @param {{user?:string, oj?:string, probNum?:string, res?:string,
+   *          language?:string, start?:number, length?:number}} [options]
+   */
+  async fetchSubmissionList(options = {}) {
+    const length = Math.min(100, Math.max(1, Number(options.length) || 20));
+    const start = Math.max(0, Number(options.start) || 0);
+    const params = {
+      draw: '1',
+      start: String(start),
+      length: String(length),
+      un: String(options.user || ''),
+      OJId: String(options.oj || 'All') || 'All',
+      probNum: String(options.probNum || ''),
+      res: String(options.res || 'all') || 'all',
+      language: String(options.language || ''),
+      onlyFollowee: options.onlyFollowee === true ? 'true' : 'false',
+    };
+    const query = Object.entries(params)
+      .map(([k, v]) => `${k}=${encodeURIComponent(v)}`)
+      .join('&');
+
+    const res = await request(`${this.baseUrl}/status/data?${query}`, {
+      headers: {
+        Accept: 'application/json, text/javascript, */*; q=0.01',
+        'X-Requested-With': 'XMLHttpRequest',
+        Referer: `${this.baseUrl}/status`,
+      },
+      jar: this.session.jar,
+      timeout: this.session.timeout,
+    });
+
+    let payload = null;
+    try {
+      payload = JSON.parse(res.body);
+    } catch {
+      payload = null;
+    }
+    if (!payload || !Array.isArray(payload.data)) {
+      // 未登录 + 仅看关注 之类的情况会给空对象，别把它当「没有提交」
+      const err = new Error(
+        res.status === 200
+          ? 'VJudge 没有返回提交列表（站点结构可能已变化，或这次筛选条件无效）'
+          : `拿不到提交列表（HTTP ${res.status}）`
+      );
+      err.status = res.status;
+      throw err;
+    }
+
+    const rows = payload.data.map(normalizeSubmissionRow).filter((row) => row.runId);
+    return {
+      rows,
+      start,
+      length,
+      // 满页就假定还有下一页（recordsTotal 不可信）
+      hasMore: rows.length >= length,
+      url: `${this.baseUrl}/status`,
+      raw: payload,
+    };
+  }
+
+  /**
+   * 单条提交的详情。`showCode=true` 时服务端会决定给什么：
+   *   - 自己的 / 作者公开的  → `code`（纯文本）
+   *   - 别人的（站点防抄）   → `codeImgUrl`（代码渲染成图片）
+   *   - 没权限             → `codeAccessInfo: {i18nKey}`（要登录 / 作者关掉了）
+   * 前端就是这么分支的（solution 页 bundle 里 code / codeImgUrl / codeAccessInfo 三条路）。
+   */
+  async fetchSubmissionDetail(runId, options = {}) {
+    const id = String(runId === undefined || runId === null ? '' : runId).trim();
+    if (!id) throw new Error('缺少提交编号');
+    const res = await request(`${this.baseUrl}/solution/data/${encodeURIComponent(id)}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+        Accept: 'application/json, text/javascript, */*; q=0.01',
+        'X-Requested-With': 'XMLHttpRequest',
+        Referer: `${this.baseUrl}/solution/${encodeURIComponent(id)}`,
+      },
+      body: `showCode=${options.showCode === false ? 'false' : 'true'}`,
+      jar: this.session.jar,
+      timeout: this.session.timeout,
+    });
+
+    let payload = null;
+    try {
+      payload = JSON.parse(res.body);
+    } catch {
+      payload = null;
+    }
+    if (!payload) throw new Error(`拿不到提交 ${id} 的详情（HTTP ${res.status}）`);
+    if (payload.error) throw new Error(errorText(payload.error));
+    return payload;
+  }
+
+  /**
+   * 拿一条提交的源码。返回三种形态：
+   *   {kind:'code', code, language} / {kind:'image', url} / {kind:'denied', message}
+   */
+  async fetchSubmissionCode(runId) {
+    const detail = await this.fetchSubmissionDetail(runId, { showCode: true });
+    const code = typeof detail.code === 'string' ? detail.code : '';
+    if (code && code.trim()) {
+      return {
+        kind: 'code',
+        code,
+        language: detail.language || '',
+        prismClass: detail.prismClass || '',
+        detail,
+      };
+    }
+    const imageUrl = detail.codeImgUrl || detail.codeImageUrl || '';
+    if (imageUrl) {
+      return { kind: 'image', url: this.absoluteUrl(imageUrl), detail };
+    }
+    if (detail.codeAccessInfo) {
+      const info = detail.codeAccessInfo;
+      return {
+        kind: 'denied',
+        message: feedbackErrorText(info) || 'VJudge 不给你看这份代码',
+        detail,
+      };
+    }
+    return { kind: 'none', message: '这条提交没有可查看的代码', detail };
+  }
+
+  /**
+   * 别人的代码是张图（防抄），而且可能还在生成 —— 站点前端会「每 1 秒重试，最多 10 次」。
+   * 这里拿回二进制自己转 data URI：webview 里直接 <img> 就行，不依赖对方允许跨站带 Cookie。
+   */
+  async fetchCodeImage(url, options = {}) {
+    const absolute = this.absoluteUrl(url);
+    if (!absolute) throw new Error('代码图片地址是空的');
+    const tries = Math.max(1, Number(options.tries) || 6);
+    const waitMs = Math.max(200, Number(options.waitMs) || 900);
+    const sameHost = absolute.startsWith(this.baseUrl);
+
+    let lastType = '';
+    let lastStatus = 0;
+    for (let i = 0; i < tries; i += 1) {
+      if (i > 0) await new Promise((resolve) => setTimeout(resolve, waitMs));
+      let res = null;
+      try {
+        res = await request(absolute, {
+          binary: true,
+          jar: sameHost ? this.session.jar : undefined,
+          timeout: this.session.timeout,
+          headers: { Accept: 'image/avif,image/webp,image/png,image/*,*/*;q=0.8' },
+        });
+      } catch (err) {
+        lastType = err && err.message ? err.message : 'NETWORK';
+        continue;
+      }
+      lastStatus = res.status;
+      lastType = String(res.headers['content-type'] || '').split(';')[0].trim();
+      const buf = Buffer.isBuffer(res.body) ? res.body : Buffer.from(String(res.body || ''), 'utf8');
+      if (res.status === 200 && /^image\//i.test(lastType) && buf.length > 64) {
+        return {
+          dataUri: `data:${lastType};base64,${buf.toString('base64')}`,
+          mime: lastType,
+          url: absolute,
+          bytes: buf.length,
+        };
+      }
+    }
+    throw new Error(
+      `拿不到代码图片（最后返回 ${lastStatus || '?'} ${lastType || ''}）。` +
+        'VJudge 生成快照有时要等几秒，点「重新获取」再试一次；还是不行就用「浏览器打开」。'
+    );
+  }
+
+  /** 自己的用户名（`/status` 的 `un` 只认真名，只看我的提交得先知道它） */
+  async myUsername(options = {}) {
+    if (this._me) return this._me;
+    const res = await this.httpGet('/message');
+    this.assertNotLoginWall(res);
+    const name = extractVisitorName(res.body || '');
+    if (!name) {
+      throw new LoginRequiredError('要只看自己的提交，得先登录 VJudge（VJudge: 登录 / 更新凭据）');
+    }
+    this._me = name;
+    if (options.cache === false) this._me = name;
+    return name;
+  }
+
+  /** 相对地址补成绝对地址（代码图片可能是 /solution/... 这种相对路径） */
+  absoluteUrl(raw) {
+    const text = String(raw == null ? '' : raw).trim();
+    if (!text) return '';
+    if (/^https?:\/\//i.test(text)) return text;
+    if (text.startsWith('//')) return `https:${text}`;
+    return `${this.baseUrl}${text.startsWith('/') ? '' : '/'}${text}`;
+  }
+
+  /** 轮询到出结果为止。超时把最后一次状态返回（不算失败）。
    * @param {string|number} runId
    * @param {{intervalMs?: number, timeoutMs?: number, isCancelled?: () => boolean,
    *          onTick?: (solution: object|null) => void, onError?: (err: Error) => void}} [options]
@@ -2155,6 +2362,58 @@ function buildGroup(data, baseUrl) {
   };
 }
 
+/* ------------------------------------------------------------------ */
+/* 提交记录（/status/data 的一行）                                      */
+/* ------------------------------------------------------------------ */
+
+/**
+ * `/status/data` 的原始行 → 内部结构。
+ * 原始字段：runId / userName / userId / avatarUrl / oj / probNum / contestId /
+ *           contestNum / contestOpenness / status / statusType / runtime / memory /
+ *           language / languageCanonical / sourceLength / time(ms) / processing
+ */
+function normalizeSubmissionRow(raw) {
+  const row = raw && typeof raw === 'object' ? raw : {};
+  const oj = String(row.oj || '');
+  const probNum = String(row.probNum || '');
+  const runId = row.runId === undefined || row.runId === null ? '' : String(row.runId);
+  const contestId = row.contestId === undefined || row.contestId === null ? '' : String(row.contestId);
+  return {
+    runId,
+    userName: String(row.userName || ''),
+    userId: row.userId === undefined || row.userId === null ? '' : String(row.userId),
+    avatarUrl: String(row.avatarUrl || ''),
+    oj,
+    probNum,
+    problemKey: oj && probNum ? `${oj}-${probNum}` : '',
+    contestId,
+    contestNum: String(row.contestNum || ''),
+    contestOpenness: Number(row.contestOpenness) || 0,
+    status: String(row.status || ''),
+    statusType: Number(row.statusType) || 0,
+    processing: row.processing === true,
+    runtime: Number(row.runtime) || 0,
+    memory: Number(row.memory) || 0,
+    language: String(row.language || ''),
+    languageCanonical: String(row.languageCanonical || ''),
+    length: Number(row.sourceLength) || 0,
+    time: Number(row.time) || 0,
+  };
+}
+
+/** 提交结果归类：accepted / failed / pending / other（配色和排序都用它） */
+function submissionResultKind(row) {
+  const r = row && typeof row === 'object' ? row : {};
+  const status = String(r.status || '');
+  if (r.processing === true) return 'pending';
+  if (r.statusType === 1) return 'accepted';
+  if (r.statusType === 2) return 'failed';
+  if (/^accepted$/i.test(status)) return 'accepted';
+  if (/^(pending|queue|judging|running|compiling|processing)$/i.test(status)) return 'pending';
+  if (!status) return 'pending';
+  return 'failed';
+}
+
 module.exports = {
   VJudgeClient,
   extractDataJson,
@@ -2179,5 +2438,7 @@ module.exports = {
   parseMessageContacts,
   extractVisitorName,
   feedbackErrorText,
+  normalizeSubmissionRow,
+  submissionResultKind,
   toGroupCard,
 };

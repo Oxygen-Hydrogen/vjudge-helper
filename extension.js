@@ -16,6 +16,9 @@ const {
   renderMessage,
   renderConversationInner,
   renderDiscussionPosts,
+  renderSubmissions,
+  renderSubmissionsBody,
+  renderSubmissionDetail,
 } = require('./src/webview/renderers');
 const {
   parseInput,
@@ -275,6 +278,11 @@ function handleProblemMessage(msg, problem, options = {}) {
       break;
     case 'version':
       pickProblemVersion(problem, options).catch(handleError);
+      break;
+    case 'submissions':
+      // 从题目面板进来：默认只看这道题里「我的」提交，没登录会自动退成「全部」。
+      // oj/题号一律从 key 里拆（比赛题目的 problem.num 是比赛内的 A/B，不是 OJ 题号）
+      showSubmissions({ scope: 'mine', problemKey: problem.key }).catch(handleError);
       break;
     case 'favorite':
       store.toggleProblem(problem).then((added) => {
@@ -758,6 +766,305 @@ async function showMessages(options = {}) {
       }
     },
   });
+}
+
+/* ------------------------------------------------------------------ */
+/* 提交记录                                                            */
+/* ------------------------------------------------------------------ */
+
+const SUBMISSIONS_PAGE = 20;
+
+/**
+ * 提交记录面板。
+ * - 自己的提交：`un=<我的用户名>`，服务端会给源码文本（showCode=true → code）
+ * - 别人的提交：VJudge 不给文本，只给一张代码图片（codeImgUrl），这里下回来转 data URI
+ *
+ * @param {{scope?: 'mine'|'all', user?: string, problemKey?: string, oj?: string,
+ *          probNum?: string, res?: string}} [options]
+ */
+async function showSubmissions(options = {}) {
+  const state = {
+    scope: options.scope === 'all' ? 'all' : 'mine',
+    me: '',
+    user: String(options.user || ''),
+    problemKey: String(options.problemKey || ''),
+    oj: String(options.oj || ''),
+    probNum: String(options.probNum || ''),
+    res: String(options.res || 'all'),
+    rows: [],
+    start: 0,
+    hasMore: false,
+    loaded: false,
+    error: '',
+    notice: '',
+    detail: null,
+    url: `${session.baseUrl}/status`,
+  };
+
+  if (state.problemKey && (!state.oj || !state.probNum)) {
+    const parts = splitProblemKey(state.problemKey);
+    state.oj = state.oj || parts.oj;
+    state.probNum = state.probNum || parts.num;
+  }
+
+  // 「只看我的」得先知道自己的用户名：/status/data 的 un 只认真实用户名，
+  // 传 mine 没用（那是站点前端自己换算的）
+  try {
+    state.me = await client.myUsername();
+  } catch (err) {
+    state.me = '';
+    if (state.scope === 'mine') {
+      state.scope = 'all';
+      state.notice = (err && err.message) || '没登录，先显示全站提交';
+    }
+  }
+  if (state.scope === 'mine' && !state.me) state.scope = 'all';
+
+  /** 面板底部状态栏 / 复制用的那个站内链接 */
+  const statusUrl = () => {
+    const hash = [];
+    const user = state.scope === 'mine' ? state.me : state.user;
+    if (user) hash.push(`un=${encodeURIComponent(user)}`);
+    if (state.oj) hash.push(`OJId=${encodeURIComponent(state.oj)}`);
+    if (state.probNum) hash.push(`probNum=${encodeURIComponent(state.probNum)}`);
+    if (state.res && state.res !== 'all') hash.push(`res=${encodeURIComponent(state.res)}`);
+    return `${session.baseUrl}/status${hash.length ? `#${hash.join('&')}` : ''}`;
+  };
+
+  const load = async (reset) => {
+    if (reset) {
+      state.start = 0;
+      state.rows = [];
+      state.loaded = false;
+      state.hasMore = false;
+    }
+    try {
+      const page = await client.fetchSubmissionList({
+        user: state.scope === 'mine' ? state.me : state.user,
+        oj: state.oj,
+        probNum: state.probNum,
+        res: state.res,
+        start: state.start,
+        length: SUBMISSIONS_PAGE,
+      });
+      state.rows = state.rows.concat(page.rows);
+      state.start = state.rows.length;
+      state.hasMore = page.hasMore && page.rows.length > 0;
+      state.error = '';
+    } catch (err) {
+      state.error = (err && err.message) || '提交记录读取失败';
+      state.hasMore = false;
+    }
+    state.loaded = true;
+  };
+
+  await withProgress('正在读取提交记录…', () => load(true));
+
+  // 面板实例要能被 pushList / openDetail 用到，所以先声明再赋值
+  // eslint-disable-next-line prefer-const
+  let panel = null;
+
+  const pushList = () => {
+    if (!panel || !panel.webview) return;
+    panel.webview.postMessage({
+      type: 'submissionView',
+      html: renderSubmissionsBody(state),
+      scrollTop: true,
+    });
+  };
+  const pushDetail = () => {
+    if (!panel || !panel.webview) return;
+    panel.webview.postMessage({
+      type: 'submissionView',
+      html: renderSubmissionDetail(state.detail, { me: state.me }),
+    });
+  };
+
+  const openDetail = async (runId) => {
+    const id = String(runId || '');
+    if (!id) return;
+    const row = state.rows.find((r) => r.runId === id) || { runId: id };
+    state.detail = { row, loading: true };
+    pushDetail();
+    try {
+      const got = await client.fetchSubmissionCode(id);
+      const merged = { ...row };
+      const extra = got.detail || {};
+      for (const key of [
+        'runId',
+        'userName',
+        'oj',
+        'probNum',
+        'status',
+        'runtime',
+        'memory',
+        'language',
+        'length',
+        'time',
+      ]) {
+        const value = extra[key];
+        if (value !== undefined && value !== null && value !== '') merged[key] = value;
+      }
+      if (!merged.problemKey && merged.oj && merged.probNum) {
+        merged.problemKey = `${merged.oj}-${merged.probNum}`;
+      }
+      if (got.kind === 'image') {
+        try {
+          const img = await client.fetchCodeImage(got.url);
+          state.detail = { ...got, row: merged, dataUri: img.dataUri };
+        } catch (err) {
+          state.detail = { kind: 'image', row: merged, error: err.message };
+        }
+      } else {
+        state.detail = { ...got, row: merged };
+      }
+    } catch (err) {
+      state.detail = { row, error: (err && err.message) || '代码没取到' };
+    }
+    pushDetail();
+  };
+
+  let handler = null;
+
+  /** 条件变了就整页重画（面板头部的「范围 / 已加载」跟着变） */
+  const reloadAll = async () => {
+    await withProgress('正在读取提交记录…', () => load(true));
+    lastOpened = {
+      kind: 'submissions',
+      key: state.scope,
+      id: state.scope,
+      title: '提交记录',
+      url: statusUrl(),
+    };
+    panel = showPanel(appContext, 'submissions', {
+      ...renderSubmissions({ ...state, url: statusUrl() }),
+      enableMathJax: false,
+      onMessage: handler,
+    });
+  };
+
+  handler = (msg) => {
+    if (!msg) return undefined;
+    if (msg.type === 'openExternal' && msg.url) return openExternal(msg.url);
+    if (msg.type === 'openPath' && msg.path) return openExternal(`${session.baseUrl}${msg.path}`);
+    if (msg.type === 'openProblem' && msg.key) return showProblem(msg.key).catch(handleError);
+    if (msg.type === 'openContest' && msg.id) return showContest(msg.id).catch(handleError);
+
+    if (msg.type === 'openUser' && msg.name) {
+      state.user = String(msg.name);
+      state.scope = 'all';
+      state.detail = null;
+      return reloadAll().catch(handleError);
+    }
+    if (msg.type === 'subOpen') return openDetail(msg.runId).catch(handleError);
+    if (msg.type === 'subScope') {
+      const scope = msg.scope === 'all' ? 'all' : 'mine';
+      if (scope === 'mine' && !state.me) {
+        vscode.window.showInformationMessage(
+          '只看自己的提交需要先登录 VJudge（VJudge: 登录 / 更新凭据）'
+        );
+        return undefined;
+      }
+      state.scope = scope;
+      state.detail = null;
+      return reloadAll().catch(handleError);
+    }
+    if (msg.type === 'subResult') {
+      state.res = msg.res === 'AC' ? 'AC' : 'all';
+      state.detail = null;
+      return reloadAll().catch(handleError);
+    }
+    if (msg.type === 'subMore') {
+      if (!state.hasMore) return undefined;
+      return (async () => {
+        await withProgress('正在读取更多提交…', () => load(false));
+        pushList();
+      })();
+    }
+    if (msg.type === 'subRetry') {
+      const id = state.detail && state.detail.row ? state.detail.row.runId : '';
+      return openDetail(id).catch(handleError);
+    }
+
+    if (msg.type !== 'action') return undefined;
+    switch (msg.action) {
+      case 'browser':
+        // 在详情里点「打开」就打开这条提交的页面，否则打开筛选好的列表
+        return openExternal(
+          state.detail && state.detail.row && state.detail.row.runId
+            ? `${session.baseUrl}/solution/${encodeURIComponent(state.detail.row.runId)}`
+            : statusUrl()
+        );
+      case 'copy':
+        return vscode.env.clipboard.writeText(statusUrl()).then(() => {
+          vscode.window.setStatusBarMessage('已复制提交记录链接', 2000);
+        });
+      case 'subRefresh':
+        return (async () => {
+          await withProgress('正在刷新提交记录…', () => load(true));
+          pushList();
+        })();
+      case 'subBack':
+        state.detail = null;
+        pushList();
+        return undefined;
+      case 'subUser':
+        return (async () => {
+          const typed = await vscode.window.showInputBox({
+            title: '只看某个用户的提交',
+            prompt: 'VJudge 用户名（留空 = 不限用户）',
+            value: state.user || '',
+            ignoreFocusOut: true,
+          });
+          if (typed === undefined) return;
+          state.user = typed.trim();
+          if (state.user) state.scope = 'all';
+          state.detail = null;
+          await reloadAll();
+        })();
+      case 'subProblem':
+        return (async () => {
+          const typed = await vscode.window.showInputBox({
+            title: '只看某道题的提交',
+            prompt: '题号，如 CodeForces-1A / 洛谷-P1001（留空 = 不限题目）',
+            value: state.problemKey || '',
+            ignoreFocusOut: true,
+          });
+          if (typed === undefined) return;
+          const text = typed.trim();
+          if (text) {
+            const key = normalizeProblemKey(text);
+            const parts = splitProblemKey(key);
+            state.problemKey = key;
+            state.oj = parts.oj;
+            state.probNum = parts.num;
+          } else {
+            state.problemKey = '';
+            state.oj = '';
+            state.probNum = '';
+          }
+          state.detail = null;
+          await reloadAll();
+        })();
+      default:
+        return undefined;
+    }
+  };
+
+  lastOpened = {
+    kind: 'submissions',
+    key: state.scope,
+    id: state.scope,
+    title: '提交记录',
+    url: statusUrl(),
+  };
+  panel = showPanel(appContext, 'submissions', {
+    ...renderSubmissions({ ...state, url: statusUrl() }),
+    enableMathJax: false,
+    onMessage: handler,
+  });
+
+  if (state.notice) vscode.window.setStatusBarMessage(state.notice, 4000);
 }
 
 async function showGroup(nameOrId, options = {}) {
@@ -1940,6 +2247,16 @@ const commands = {
       return;
     }
     await openExternal(lastSolutionUrl);
+  }),
+
+  /** 我的提交记录：服务端会给源码文本，能直接在面板里看 / 复制 */
+  mySubmissions: wrap(async () => {
+    await showSubmissions({ scope: 'mine' });
+  }),
+
+  /** 全站提交记录（可以按用户 / 题目筛）；别人的代码 VJudge 只给图片 */
+  submissions: wrap(async () => {
+    await showSubmissions({ scope: 'all' });
   }),
 
   /** 提交日志：每次提交打到哪条通道、服务端怎么回的，都记在这个文件里 */

@@ -31,6 +31,16 @@ body {
   min-height: 100vh;
 }
 
+/* 默认链接色是浏览器的深蓝/紫，在暗色主题下几乎看不见，统一走主题强调色 */
+a {
+  color: var(--vj-accent);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
 /* ---------------- header ---------------- */
 
 .vj-header {
@@ -1152,4 +1162,169 @@ table.vj-st tbody tr:last-child td {
 
 .vj-st__cell.is-upsolve {
   opacity: 0.9;
+}
+
+/* ---------------- 提交记录 ---------------- */
+
+.vj-subs {
+  margin: 4px 0 24px;
+}
+
+.vj-subs__bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.vj-subs__tabs {
+  display: inline-flex;
+  gap: 4px;
+}
+
+.vj-subs__filter {
+  font-size: 0.82rem;
+}
+
+.vj-subs__more {
+  margin-top: 10px;
+  font-size: 0.82rem;
+}
+
+table.vj-subs__tbl {
+  width: 100%;
+  border-collapse: collapse;
+  border: 1px solid var(--vj-border);
+  font-size: 0.82rem;
+  font-variant-numeric: tabular-nums;
+}
+
+table.vj-subs__tbl th,
+table.vj-subs__tbl td {
+  border-bottom: 1px solid var(--vj-border);
+  padding: 5px 8px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+table.vj-subs__tbl thead th {
+  background: var(--vj-card-bg);
+  font-weight: 600;
+  font-size: 0.78rem;
+  color: var(--vj-muted);
+}
+
+table.vj-subs__tbl tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.vj-sub {
+  cursor: pointer;
+}
+
+.vj-sub:hover td {
+  background: color-mix(in srgb, var(--vj-accent) 8%, transparent);
+}
+
+.vj-sub.is-me td {
+  background: color-mix(in srgb, var(--vj-accent) 5%, transparent);
+}
+
+.vj-sub__time {
+  color: var(--vj-muted);
+}
+
+.vj-sub__res {
+  font-weight: 600;
+}
+
+.vj-sub.is-ac .vj-sub__res {
+  color: var(--vscode-testing-iconPassed, #1a7f37);
+}
+
+.vj-sub.is-fail .vj-sub__res {
+  color: var(--vscode-testing-iconFailed, #cf222e);
+}
+
+.vj-sub.is-pending .vj-sub__res {
+  color: var(--vj-muted);
+}
+
+.vj-sub__num {
+  text-align: right;
+  color: var(--vj-muted);
+}
+
+.vj-sub__contest {
+  margin-left: 6px;
+  font-size: 0.78rem;
+  color: var(--vj-muted);
+}
+
+.vj-sub__open {
+  color: var(--vj-accent);
+  font-size: 0.8rem;
+}
+
+/* 单条提交的代码视图 */
+
+.vj-subd__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.vj-subd__meta {
+  font-size: 0.84rem;
+}
+
+.vj-subd__meta .vj-sub__res {
+  font-weight: 700;
+}
+
+.vj-subd__toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+  font-size: 0.82rem;
+}
+
+pre.vj-subd__pre {
+  margin: 0;
+  padding: 12px 14px;
+  background: var(--vj-code-bg);
+  border: 1px solid var(--vj-border);
+  border-radius: 8px;
+  overflow: auto;
+  max-height: 70vh;
+  font-size: 0.84rem;
+  line-height: 1.55;
+  font-family: var(--vscode-editor-font-family, Consolas, "Courier New", monospace);
+  tab-size: 4;
+}
+
+pre.vj-subd__pre code {
+  background: none;
+  padding: 0;
+  white-space: pre;
+}
+
+.vj-subd__figure {
+  margin: 0;
+}
+
+.vj-subd__img {
+  max-width: 100%;
+  border: 1px solid var(--vj-border);
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.vj-subd__figure figcaption {
+  margin-top: 6px;
+  font-size: 0.8rem;
 }

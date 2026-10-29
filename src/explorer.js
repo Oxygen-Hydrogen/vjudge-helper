@@ -354,6 +354,8 @@ class VJudgeTreeProvider {
     return [
       mk('submit', '提交当前文件代码', 'cloud-upload', 'vjudgeHelper.submitCode'),
       mk('last-solution', '打开最近一次提交', 'history', 'vjudgeHelper.openLastSolution'),
+      mk('my-submissions', '我的提交记录', 'history', 'vjudgeHelper.mySubmissions'),
+      mk('submissions', '全站提交记录…', 'list-unordered', 'vjudgeHelper.submissions'),
       mk('open-problem', '打开题目…', 'book', 'vjudgeHelper.openProblem'),
       mk('open-article', '打开文章…', 'file-text', 'vjudgeHelper.openArticle'),
       mk('open-contest', '打开比赛…', 'trophy', 'vjudgeHelper.openContest'),

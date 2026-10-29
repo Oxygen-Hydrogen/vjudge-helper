@@ -4,6 +4,16 @@ const { escapeHtml, formatDateTime, relativeTime, normalizeMathTokens } = requir
 const { renderMarkdown } = require('../markdown');
 const { formatClock, formatPenalty } = require('../standings');
 const { submitMethodsOf } = require('../submit');
+const { highlightCodeBlocks, normalizeLang } = require('../highlight');
+
+/** 提交里的语言名（"C++ 17" / "CPP" / "Python3"）→ 高亮器认的键；认不出就不染色 */
+function normalizeHighlightLang(raw) {
+  try {
+    return normalizeLang(raw) || null;
+  } catch {
+    return null;
+  }
+}
 
 function linkProblem(key, text) {
   return `<a class="vj-prob-link" href="vjudge-problem:${encodeURIComponent(key)}">${escapeHtml(text || key)}</a>`;
@@ -106,6 +116,11 @@ function renderProblem(problem, options = {}) {
       ? { id: 'contest', label: '返回比赛', title: '回到这场比赛的面板（含实时榜单）' }
       : null,
     { id: 'browser', label: '浏览器打开' },
+    {
+      id: 'submissions',
+      label: '提交记录',
+      title: '看这道题的提交记录：默认只看我的（能看源码），可切「全部」看别人的（VJudge 只给图片）',
+    },
     { id: 'copy', label: '复制链接' },
     { id: 'favorite', label: options.isFavorite ? '★ 已收藏' : '☆ 收藏', primary: false },
     { id: 'refresh', label: '刷新' },
@@ -771,6 +786,230 @@ function renderContestDiscussion(discussion, options = {}) {
   </section>`;
 }
 
+/* ------------------------------------------------------------------ */
+/* 提交记录                                                            */
+/* ------------------------------------------------------------------ */
+
+const RESULT_CLASS = {
+  accepted: 'is-ac',
+  failed: 'is-fail',
+  pending: 'is-pending',
+};
+
+function resultKind(row) {
+  const status = String((row && row.status) || '');
+  if (row && row.processing === true) return 'pending';
+  if (row && row.statusType === 1) return 'accepted';
+  if (row && row.statusType === 2) return 'failed';
+  if (/^accepted$/i.test(status)) return 'accepted';
+  if (!status || /^(pending|queue|judging|running|compiling|processing)$/i.test(status)) return 'pending';
+  return 'failed';
+}
+
+function formatMemory(kb) {
+  const n = Number(kb) || 0;
+  if (!n) return '—';
+  if (n >= 1024) return `${(n / 1024).toFixed(1)} MB`;
+  return `${n} KB`;
+}
+
+/** 行里显示的题目标签：优先 `OJ-题号`，缺字段就退回 problemKey */
+function submissionProblemLabel(row) {
+  const r = row || {};
+  if (r.oj && r.probNum) return `${r.oj}-${r.probNum}`;
+  return r.problemKey || '';
+}
+
+/** 一行提交 */
+function renderSubmissionRow(row, options = {}) {
+  const me = String(options.me || '');
+  const kind = resultKind(row);
+  const mine = !!me && row.userName === me;
+  const label = submissionProblemLabel(row);
+  const problem = row.problemKey ? linkProblem(row.problemKey, label) : escapeHtml(label);
+  const contest = row.contestId
+    ? ` <a class="vj-sub__contest" href="vjudge-contest:${encodeURIComponent(row.contestId)}" title="这场比赛里的 ${escapeHtml(
+        row.contestNum || '?'
+      )} 题">#${escapeHtml(row.contestId)}${row.contestNum ? ` ${escapeHtml(row.contestNum)}` : ''}</a>`
+    : '';
+  return `<tr class="vj-sub ${RESULT_CLASS[kind] || ''}${mine ? ' is-me' : ''}" data-action="subOpen" data-run="${escapeHtml(
+    row.runId
+  )}" title="点击查看这条提交的代码">
+    <td class="vj-sub__time">${escapeHtml(formatDateTime(row.time))}</td>
+    <td class="vj-sub__user">${
+      mine ? `<b>${escapeHtml(row.userName)}</b>` : `<a href="vjudge-user:${encodeURIComponent(row.userName)}">${escapeHtml(row.userName)}</a>`
+    }</td>
+    <td class="vj-sub__prob">${problem}${contest}</td>
+    <td class="vj-sub__res">${escapeHtml(row.status || (row.processing ? '判题中…' : '?'))}</td>
+    <td class="vj-sub__num">${row.runtime ? `${row.runtime} ms` : '—'}</td>
+    <td class="vj-sub__num">${escapeHtml(formatMemory(row.memory))}</td>
+    <td class="vj-sub__lang">${escapeHtml(row.language || '—')}</td>
+    <td class="vj-sub__num">${row.length ? `${row.length} B` : '—'}</td>
+    <td class="vj-sub__act"><span class="vj-sub__open">代码</span></td>
+  </tr>`;
+}
+
+/** 列表主体（可单独替换，加载更多时只换这一块） */
+function renderSubmissionsInner(view) {
+  const v = view || {};
+  if (v.error) {
+    return emptyState('提交记录打不开', v.error, '需要登录 VJudge 才能看自己的提交；看全站的提交不用登录。');
+  }
+  const rows = Array.isArray(v.rows) ? v.rows : [];
+  if (!rows.length) {
+    return emptyState(
+      v.loaded ? '没有符合条件的提交' : '正在读提交记录…',
+      v.loaded ? '换个用户名 / 题目，或者把结果筛选改成「全部」' : ''
+    );
+  }
+  const more = v.hasMore
+    ? `<div class="vj-subs__more"><button class="vj-btn vj-btn--mini" data-action="subMore">加载更多（已 ${rows.length} 条）</button></div>`
+    : `<div class="vj-subs__more vj-dim">已经到底了，共 ${rows.length} 条</div>`;
+
+  return `<table class="vj-subs__tbl">
+    <thead>
+      <tr>
+        <th>时间</th><th>用户</th><th>题目</th><th>结果</th>
+        <th>用时</th><th>内存</th><th>语言</th><th>长度</th><th></th>
+      </tr>
+    </thead>
+    <tbody>${rows.map((row) => renderSubmissionRow(row, { me: v.me })).join('')}</tbody>
+  </table>${more}`;
+}
+
+/** 单条提交的代码视图 */
+function renderSubmissionDetail(detail, options = {}) {
+  const d = detail || {};
+  const row = d.row || {};
+  const me = String(options.me || '');
+  const kind = resultKind(row);
+  const back = `<button class="vj-btn vj-btn--mini" data-action="subBack">← 返回列表</button>`;
+
+  const metaBits = [
+    row.userName ? `<b>${escapeHtml(row.userName)}</b>${row.userName === me ? '（我）' : ''}` : '',
+    row.problemKey
+      ? linkProblem(row.problemKey, submissionProblemLabel(row))
+      : '',
+    row.status ? `<span class="vj-sub__res ${RESULT_CLASS[kind] || ''}">${escapeHtml(row.status)}</span>` : '',
+    row.runtime ? `${row.runtime} ms` : '',
+    row.memory ? formatMemory(row.memory) : '',
+    row.language || '',
+    row.length ? `${row.length} B` : '',
+    row.time ? formatDateTime(row.time) : '',
+    row.runId ? `#${escapeHtml(row.runId)}` : '',
+  ].filter(Boolean);
+
+  const head = `<div class="vj-subd__head">
+    ${back}
+    <span class="vj-subd__meta">${metaBits.join(' <span class="vj-dim">·</span> ')}</span>
+  </div>`;
+
+  if (d.loading) {
+    return `${head}<p class="vj-dim">正在取代码…</p>`;
+  }
+
+  if (d.error) {
+    return `${head}
+      <div class="vj-subd__toolbar">
+        <button class="vj-btn vj-btn--mini" data-action="subRetry">重新获取</button>
+        <button class="vj-btn vj-btn--mini" data-action="browser">在网页上打开</button>
+      </div>
+      ${emptyState('代码没取到', d.error, '别人的代码 VJudge 只给图片，快照有时要等几秒')}`;
+  }
+
+  if (d.kind === 'image') {
+    return `${head}
+      <figure class="vj-subd__figure">
+        <img class="vj-subd__img" src="${escapeHtml(d.dataUri || '')}" alt="提交 ${
+          escapeHtml(row.runId || '')
+        } 的代码（VJudge 提供的图片）" />
+        <figcaption class="vj-dim">VJudge 不给别人看源码文本，只给这张图；右键可以另存。</figcaption>
+      </figure>`;
+  }
+
+  if (d.kind === 'denied') {
+    return `${head}${emptyState('看不到这份代码', d.message || 'VJudge 不给你看这份代码', '去网页上试试，或者登录后再看')}`;
+  }
+
+  if (d.kind === 'code') {
+    const lang = normalizeHighlightLang(d.language || d.prismClass);
+    const cls = lang ? ` class="language-${lang}"` : '';
+    const html = highlightCodeBlocks(
+      `<pre class="vj-subd__pre"><code${cls}>${escapeHtml(d.code || '')}</code></pre>`
+    );
+    return `${head}
+      <div class="vj-subd__toolbar">
+        <button class="vj-btn vj-btn--mini" data-action="copy" data-copy="${escapeHtml(d.code || '')}">复制代码</button>
+        <span class="vj-dim">${d.code ? `${String(d.code).split('\n').length} 行` : ''}</span>
+      </div>
+      ${html}`;
+  }
+
+  return `${head}${emptyState('这条提交没有代码', d.message || '可能是提交被删了，或者这条记录不带源码')}`;
+}
+
+/** 列表整块（工具栏 + 表格）。切筛选 / 加载更多都整体替换这一块，按钮的选中态才会跟着变 */
+function renderSubmissionsBody(view) {
+  const v = view || {};
+  const scope = v.scope === 'all' ? 'all' : 'mine';
+  const onlyAc = v.res === 'AC';
+  const filterBits = [];
+  if (v.user) filterBits.push(`用户 <b>${escapeHtml(v.user)}</b>`);
+  if (v.problemKey) filterBits.push(`题目 ${linkProblem(v.problemKey, v.problemKey)}`);
+  if (onlyAc) filterBits.push('只看通过');
+
+  return `<div class="vj-subs__bar">
+      <span class="vj-subs__tabs">
+        <button class="vj-btn vj-btn--mini${scope === 'mine' ? ' is-on' : ''}" data-action="subScope" data-scope="mine"${
+          v.me ? '' : ' title="只看自己需要一个用户名，可能还没登录"'
+        }>我的</button>
+        <button class="vj-btn vj-btn--mini${scope === 'all' ? ' is-on' : ''}" data-action="subScope" data-scope="all">全部</button>
+      </span>
+      <span class="vj-subs__tabs">
+        <button class="vj-btn vj-btn--mini${onlyAc ? '' : ' is-on'}" data-action="subResult" data-res="all">全部结果</button>
+        <button class="vj-btn vj-btn--mini${onlyAc ? ' is-on' : ''}" data-action="subResult" data-res="AC">只看通过</button>
+      </span>
+      <button class="vj-btn vj-btn--mini" data-action="subUser">${v.user ? '换用户…' : '按用户筛选…'}</button>
+      <button class="vj-btn vj-btn--mini" data-action="subProblem">${v.problemKey ? '换题目…' : '按题目筛选…'}</button>
+      ${filterBits.length ? `<span class="vj-dim vj-subs__filter">${filterBits.join(' · ')}</span>` : ''}
+    </div>
+    ${renderSubmissionsInner(v)}`;
+}
+
+/** 提交记录整块（工具栏 + 列表） */
+function renderSubmissions(view) {
+  const v = view || {};
+  const scope = v.scope === 'all' ? 'all' : 'mine';
+  const label = scope === 'mine' ? '我的提交' : v.user ? `${v.user} 的提交` : '全站提交';
+  const counter = Array.isArray(v.rows) ? v.rows.length : 0;
+
+  const meta = [
+    { label: '范围', value: label },
+    ...(v.me ? [{ label: '登录为', value: v.me }] : []),
+    ...(v.problemKey ? [{ label: '题目', value: v.problemKey }] : []),
+    { label: '已加载', value: String(counter) },
+  ];
+
+  const actions = [
+    { id: 'subRefresh', label: '刷新', primary: true },
+    { id: 'browser', label: '浏览器打开' },
+    { id: 'copy', label: '复制链接', primary: false },
+  ];
+
+  const inner = v.detail ? renderSubmissionDetail(v.detail, { me: v.me }) : renderSubmissionsBody(v);
+  const body = `<div class="vj-subs" id="vj-sub-inner">${inner}</div>`;
+
+  return {
+    title: 'VJudge 提交记录',
+    subtitle: label,
+    meta,
+    actions,
+    body,
+    footer: `<span>${escapeHtml(v.url || '')}</span>`,
+    data: v,
+  };
+}
+
 module.exports = {
   renderProblem,
   renderArticle,
@@ -782,6 +1021,11 @@ module.exports = {
   renderConversationInner,
   renderContestDiscussion,
   renderDiscussionPosts,
+  renderSubmissions,
+  renderSubmissionsBody,
+  renderSubmissionsInner,
+  renderSubmissionDetail,
+  renderSubmissionRow,
   emptyState,
   linkProblem,
   linkContest,

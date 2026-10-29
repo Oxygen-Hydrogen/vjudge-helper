@@ -8,6 +8,7 @@
     ['vjudge-contest:', 'openContest', 'id'],
     ['vjudge-article:', 'openArticle', 'id'],
     ['vjudge-group:', 'openGroup', 'name'],
+    ['vjudge-user:', 'openUser', 'name'],
   ];
 
   function showToast(text) {
@@ -156,6 +157,30 @@
         vscode.postMessage({ type: 'discussDelete', post: button.getAttribute('data-post') || '' });
         return;
       }
+      if (action === 'subOpen') {
+        vscode.postMessage({ type: 'subOpen', runId: button.getAttribute('data-run') || '' });
+        return;
+      }
+      if (action === 'subScope') {
+        vscode.postMessage({ type: 'subScope', scope: button.getAttribute('data-scope') || 'mine' });
+        return;
+      }
+      if (action === 'subResult') {
+        vscode.postMessage({ type: 'subResult', res: button.getAttribute('data-res') || 'all' });
+        return;
+      }
+      if (action === 'subMore') {
+        vscode.postMessage({ type: 'subMore' });
+        return;
+      }
+      if (action === 'subRetry') {
+        vscode.postMessage({ type: 'subRetry' });
+        return;
+      }
+      if (action === 'subBack' || action === 'subRefresh') {
+        vscode.postMessage({ type: 'action', action });
+        return;
+      }
 
       vscode.postMessage({ type: 'action', action });
     }
@@ -172,6 +197,7 @@
       if (input) input.value = '';
     }
     if (data.type === 'discussionPosts') applyDiscussion(data);
+    if (data.type === 'submissionView') applySubmissionView(data);
     if (data.type === 'discussClear') {
       const input = document.getElementById('vj-discuss-input');
       if (input) input.value = '';
@@ -198,6 +224,14 @@
     if (box && typeof data.html === 'string') box.innerHTML = data.html;
     const count = document.getElementById('vj-discuss-count');
     if (count && data.count !== undefined) count.textContent = data.count ? data.count + ' 条评论' : '';
+  }
+
+  /** 提交记录：列表 / 详情都只换中间那块，面板头部（筛选条件）不动 */
+  function applySubmissionView(data) {
+    const box = document.getElementById('vj-sub-inner');
+    if (!box || typeof data.html !== 'string') return;
+    box.innerHTML = data.html;
+    if (data.scrollTop) window.scrollTo({ top: 0 });
   }
 
   /** 榜单原地刷新：只换表格，不重载整页（滚动位置、展开状态都保留） */

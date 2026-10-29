@@ -146,6 +146,9 @@ function request(rawUrl, options = {}) {
     timeout = 20000,
     maxRedirects = 5,
     retries = 2,
+    // 下载图片这类二进制内容时置 true：body 会是 Buffer（默认是 utf8 字符串，
+    // 图片用它转 base64 会先把二进制解坏，所以必须分开处理）
+    binary = false,
   } = options;
 
   const attempt = (url, redirectsLeft, triesLeft) =>
@@ -208,11 +211,12 @@ function request(rawUrl, options = {}) {
           res.on('data', (c) => chunks.push(c));
           res.on('end', () => {
             const raw = Buffer.concat(chunks);
-            const text = decompress(raw, res.headers['content-encoding']).toString('utf8');
+            const buffer = decompress(raw, res.headers['content-encoding']);
             resolve({
               status,
               headers: res.headers,
-              body: text,
+              body: binary ? buffer : buffer.toString('utf8'),
+              buffer,
               url,
             });
           });

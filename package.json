@@ -2,7 +2,7 @@
   "name": "vjudge-helper",
   "displayName": "VJudge Helper",
   "description": "在 VS Code 中一键查看 VJudge 题面、一键提交本地代码并跟踪评测结果，还能打开题目链接、阅读文章、浏览比赛与团队",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "publisher": "HydrogenOxygen",
   "license": "MIT",
   "repository": {
@@ -127,6 +127,18 @@
         "title": "打开最近一次提交",
         "category": "VJudge",
         "icon": "$(history)"
+      },
+      {
+        "command": "vjudgeHelper.mySubmissions",
+        "title": "我的提交记录（看源码）",
+        "category": "VJudge",
+        "icon": "$(history)"
+      },
+      {
+        "command": "vjudgeHelper.submissions",
+        "title": "全站提交记录（可按用户/题目筛）",
+        "category": "VJudge",
+        "icon": "$(list-unordered)"
       },
       {
         "command": "vjudgeHelper.showSubmitLog",
