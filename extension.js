@@ -1,6 +1,8 @@
 'use strict';
 
 const vscode = require('vscode');
+const fsLib = require('fs');
+const pathLib = require('path');
 
 const { Session, LoginRequiredError } = require('./src/session');
 const { VJudgeClient } = require('./src/vjudge');
@@ -30,6 +32,7 @@ const {
 } = require('./src/util');
 const submitLib = require('./src/submit');
 const randomLib = require('./src/random');
+const cphLib = require('./src/cph');
 const { buildStandings } = require('./src/standings');
 const log = require('./src/log');
 
@@ -128,6 +131,470 @@ function updateStatusBar() {
 }
 
 /* ------------------------------------------------------------------ */
+/* 传送样例到 CPH / CPH-NG                                              */
+/* ------------------------------------------------------------------ */
+
+/**
+ * CPH 系的扩展 id 换过几次（老的 CPH 是 DivyanshuAgrawal.competitive-programming-helper），
+ * 所以先按已知 id 找，找不到再按 package.json 的 name 兜底（fork / 改过 publisher 的情况）。
+ */
+const CPH_EXTENSIONS = [
+  { kind: 'cph-ng', id: 'langningchen.cph-ng', label: 'CPH-NG' },
+  { kind: 'cph', id: 'DivyanshuAgrawal.competitive-programming-helper', label: 'CPH' },
+  { kind: 'cph', id: 'agrawal-d.cp-helper', label: 'CPH' },
+];
+
+function findCphExtension() {
+  const api = vscode.extensions || {};
+  const get = typeof api.getExtension === 'function' ? api.getExtension.bind(api) : null;
+  for (const entry of CPH_EXTENSIONS) {
+    const hit = (get && get(entry.id)) || null;
+    if (hit) return { ...entry, extension: hit };
+  }
+  const all = Array.isArray(api.all) ? api.all : [];
+  const loose = all.find((ext) => {
+    const name = String((ext && ext.packageJSON && ext.packageJSON.name) || '');
+    return name === 'cph-ng' || name === 'cph';
+  });
+  if (!loose) return null;
+  const isNg = String((loose.packageJSON || {}).name) === 'cph-ng';
+  return { kind: isNg ? 'cph-ng' : 'cph', id: loose.id, label: isNg ? 'CPH-NG' : 'CPH', extension: loose };
+}
+
+/** 端口：插件设置优先 → CPH-NG 自己的设置 → 默认 27121 */
+function cphPortOf(target) {
+  const override = Number(config().get('cphPort')) || 0;
+  if (override > 0) return override;
+  if (target && target.kind === 'cph-ng') {
+    const ngConfig = cphNgConfig();
+    const port = Number(ngConfig && ngConfig.get('companion.listenPort'));
+    if (Number.isFinite(port) && port > 0) return port;
+  }
+  return cphLib.DEFAULT_PORT;
+}
+
+/** 我们随扩展带的 CPH-NG 路径脚本（接管后才生效） */
+const CPH_PATH_SCRIPT_KEY = 'companion.customPathScript';
+const CPH_SCRIPT_DECLINED = 'cph.scriptDeclined';
+const CPH_LANG_MEMORY = 'cph.language';
+
+function cphPathScriptFile() {
+  const uri = appContext && appContext.extensionUri;
+  const dir = uri && uri.fsPath ? uri.fsPath : '';
+  return dir ? pathLib.join(dir, 'res', 'cph-ng-path.js') : '';
+}
+
+function cphNgConfig() {
+  try {
+    return vscode.workspace.getConfiguration('cph-ng');
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 让 CPH-NG 用我们的路径脚本决定「源文件放哪」。
+ *
+ * 默认脚本写死 `.cpp` 且只会放在工作区根目录，不接管就没法选语言、也没法挂到当前文件。
+ * 只在它还是默认值（或者本来就是我们的）时自动接管；用户自己写过脚本就先问一句。
+ */
+async function ensureCphPathScript() {
+  const script = cphPathScriptFile();
+  if (!script || !fsLib.existsSync(script)) return { ok: false, reason: 'missing' };
+
+  const cfg = cphNgConfig();
+  if (!cfg) return { ok: false, reason: 'no-config' };
+
+  const inspect = typeof cfg.inspect === 'function' ? cfg.inspect(CPH_PATH_SCRIPT_KEY) : null;
+  const explicit = inspect ? inspect.workspaceValue || inspect.globalValue || '' : '';
+  if (explicit === script) return { ok: true, script };
+
+  // 升级扩展后安装目录会变（…-1.8.1 → …-1.8.2），旧值仍然算「我们自己的」，直接改成新路径
+  const isOurs = /[\\/]res[\\/]cph-ng-path\.js$/i.test(String(explicit));
+  const isDefault = !explicit || isOurs || /res[\\/]defaultScript\.js$/i.test(String(explicit));
+  if (!isDefault) {
+    if (appContext.globalState.get(CPH_SCRIPT_DECLINED) === explicit) {
+      return { ok: false, reason: 'custom' };
+    }
+    const choice = await vscode.window.showWarningMessage(
+      `CPH-NG 的路径脚本被改过（${explicit}），它决定「样例挂到哪个文件」。` +
+        '要让 VJudge Helper 指定源文件和语言，得先接管这个脚本。',
+      { modal: true },
+      '接管（推荐）',
+      '保持原样'
+    );
+    if (choice !== '接管（推荐）') {
+      await appContext.globalState.update(CPH_SCRIPT_DECLINED, explicit);
+      return { ok: false, reason: 'custom' };
+    }
+    await appContext.globalState.update(CPH_SCRIPT_DECLINED, undefined);
+  }
+
+  const target = inspect && inspect.workspaceValue ? vscode.ConfigurationTarget.Workspace : vscode.ConfigurationTarget.Global;
+  try {
+    await cfg.update(CPH_PATH_SCRIPT_KEY, script, target);
+  } catch (error) {
+    log.write('cph.script.updateFailed', { message: error.message });
+    return { ok: false, reason: 'failed' };
+  }
+  log.write('cph.script.takeover', { script, scope: target === vscode.ConfigurationTarget.Workspace ? 'workspace' : 'global' });
+  return { ok: true, script };
+}
+
+/**
+ * 「当前文件」= 提交时认的那份代码（Ctrl+Alt+Enter 用的就是它）。
+ * 面板抢到焦点后 activeTextEditor 会变成 undefined，这时往后退回最近编辑过的文档，
+ * 免得从面板里点「传送样例」时认不出你刚写的那份代码。
+ */
+function codeFilePath() {
+  return cphLib.filePathOfDocument(currentCodeDocument());
+}
+
+function baseNameOf(file) {
+  return String(file || '').split(/[\\/]/).pop() || file;
+}
+
+/** 新建文件放哪：跟正在写的文件放一起，其次工作区根目录 */
+function folderForNewFile() {
+  const current = codeFilePath();
+  if (current) return pathLib.dirname(current);
+  const folders = vscode.workspace.workspaceFolders;
+  if (Array.isArray(folders) && folders.length && folders[0].uri) return folders[0].uri.fsPath;
+  return '';
+}
+
+/** 语言选择；记住上次用的，下次直接排在第一位 */
+async function pickCphLanguage(problem, folder) {
+  const remembered = appContext.globalState.get(CPH_LANG_MEMORY);
+  const list = cphLib.LANGUAGES.slice().sort((a, b) => (a.id === remembered ? -1 : b.id === remembered ? 1 : 0));
+  const picked = await vscode.window.showQuickPick(
+    list.map((lang) => ({
+      label: lang.label,
+      description: `.${lang.ext}`,
+      detail: `${folder}${pathLib.sep}${cphLib.fileBaseName(problem)}.${lang.ext}`,
+      lang,
+    })),
+    { placeHolder: '样例要送到哪种语言的源文件？（决定新建文件的扩展名）', title: '选择语言' }
+  );
+  if (!picked) return null;
+  await appContext.globalState.update(CPH_LANG_MEMORY, picked.lang.id);
+  return picked.lang;
+}
+
+/**
+ * 问一句：样例挂到哪个文件上。
+ *
+ * 「当前文件」就是提交时认的那份（Ctrl+Alt+Enter / 面板上的「提交」用的是同一个），
+ * 面板抢走焦点后也能认出来，所以它排在第一项——直接回车就是挂到这份代码上。
+ *
+ * @returns {Promise<{mode: 'new'|'current'|'auto', file?: string} | null>} null = 用户取消
+ */
+async function chooseCphTarget(problem, target) {
+  const canChooseFile = target.kind === 'cph-ng';
+  const configured = String(config().get('cphFileMode') || 'ask');
+  const current = codeFilePath();
+  const currentLang = current ? cphLib.languageOf(current) : null;
+
+  if (canChooseFile && configured === 'current' && current && currentLang) {
+    return { mode: 'current', file: current };
+  }
+  if (canChooseFile && configured === 'new') {
+    const folder = folderForNewFile();
+    if (!folder) return { mode: 'auto' };
+    const remembered = cphLib.languageById(String(config().get('cphLanguage') || 'ask'));
+    const lang = remembered || (await pickCphLanguage(problem, folder));
+    if (!lang) return null;
+    return { mode: 'new', file: pathLib.join(folder, `${cphLib.fileBaseName(problem)}.${lang.ext}`) };
+  }
+  if (configured === 'auto' || !canChooseFile) return { mode: 'auto' };
+
+  const items = [];
+  if (current && currentLang) {
+    const record = cphRecordPath(current);
+    const hasProblem = !!record && fsLib.existsSync(record);
+    items.push({
+      id: 'current',
+      label: `$(file-code) 用当前文件：${baseNameOf(current)}`,
+      description: hasProblem
+        ? `${currentLang.label} · CPH-NG 里已有这道题，样例会被换成题面里的`
+        : `${currentLang.label} · 就是 Ctrl+Alt+Enter 提交的那个文件`,
+      detail: current,
+    });
+  }
+  const folder = folderForNewFile();
+  if (folder) {
+    items.push({
+      id: 'new',
+      label: '$(new-file) 新建一个源文件',
+      description: `${cphLib.fileBaseName(problem)}.cpp 之类`,
+      detail: `放在 ${folder}，下一步选语言`,
+    });
+  }
+  // 什么都没有时就别问了，1.8.0 的老行为照走
+  if (!items.length) return { mode: 'auto' };
+  items.push({
+    id: 'auto',
+    label: `$(wrench) 让 ${target.label} 自己决定`,
+    description: '按它默认的路径脚本建题（一般是工作区里的 .cpp）',
+    detail: '和浏览器里的 Competitive Companion 发过去一样',
+  });
+
+  const picked = await vscode.window.showQuickPick(items, {
+    placeHolder: `这 ${Array.isArray(problem.samples) ? problem.samples.length : 0} 组样例送到哪里？`,
+    title: `传送样例至 ${target.label}`,
+  });
+  if (!picked) return null;
+  if (picked.id === 'auto') return { mode: 'auto' };
+  if (picked.id === 'current') return { mode: 'current', file: current };
+
+  const lang = await pickCphLanguage(problem, folder);
+  if (!lang) return null;
+  return { mode: 'new', file: pathLib.join(folder, `${cphLib.fileBaseName(problem)}.${lang.ext}`) };
+}
+
+/** 等 CPH-NG 把文件建出来（它收题是异步的，POST 返回 ok 时文件可能还没落地） */
+async function waitForFile(file, timeout) {
+  const deadline = Date.now() + (timeout || 4000);
+  while (Date.now() < deadline) {
+    if (fsLib.existsSync(file)) return true;
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+  return fsLib.existsSync(file);
+}
+
+/** CPH-NG 的题目记录：`<工作区>/.cph-ng/<相对路径>.bin`（算不出来就返回空串） */
+function cphRecordPath(file) {
+  if (!file || typeof vscode.workspace.getWorkspaceFolder !== 'function') return '';
+  try {
+    const folder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(file));
+    const root = folder && folder.uri && folder.uri.fsPath;
+    return cphLib.recordPathFor(root, file);
+  } catch {
+    return '';
+  }
+}
+
+function mtimeOf(file) {
+  try {
+    return fsLib.statSync(file).mtimeMs;
+  } catch {
+    return 0;
+  }
+}
+
+/** Windows 上大小写不敏感，比较路径前统一一下 */
+function sameFile(a, b) {
+  if (!a || !b) return false;
+  try {
+    return pathLib.resolve(a).toLowerCase() === pathLib.resolve(b).toLowerCase();
+  } catch {
+    return a === b;
+  }
+}
+
+/**
+ * 把 CPH-NG 内存里「这个文件的题」挤出去。
+ *
+ * 它导入时先写记录文件，然后 `repo.loadByPath(path)`——而这个查找**先看内存**
+ * （`problem.isRelated()` 比 src.path），命中就直接返回那道旧题，磁盘上刚写的新题看都不看。
+ * 结果就是：文件真的写了（`.cph-ng/*.bin` 里样例齐全），侧边栏却还是旧题、样例是空的。
+ *
+ * 换个活动文本编辑器会触发它的 `onActiveEditorChanged()`：先把旧题 persist 到磁盘
+ * 再从内存里卸掉。之后再导入就能正常读到新记录。所以这里先切走、等它存完盘，再发。
+ *
+ * @returns {Promise<object|null>} 我们自己开的临时文档（发完要关掉）
+ */
+async function detachCphActiveProblem(targetFile, record) {
+  const before = mtimeOf(record);
+  let scratch = null;
+  try {
+    const groups = vscode.window.tabGroups && Array.isArray(vscode.window.tabGroups.all) ? vscode.window.tabGroups.all : [];
+    const other = groups
+      .reduce((all, group) => all.concat(Array.isArray(group.tabs) ? group.tabs : []), [])
+      .find((tab) => {
+        const uri = tab && tab.input && tab.input.uri;
+        return uri && uri.scheme === 'file' && uri.fsPath !== targetFile;
+      });
+    if (other) {
+      const doc = await vscode.workspace.openTextDocument(other.input.uri);
+      await vscode.window.showTextDocument(doc, { preview: true, preserveFocus: false });
+    } else {
+      // 没有别的标签页可切：临时开一个空白文档，发完再关
+      scratch = await vscode.workspace.openTextDocument({ content: '', language: 'plaintext' });
+      await vscode.window.showTextDocument(scratch, { preview: true, preserveFocus: false });
+    }
+  } catch (error) {
+    log.write('cph.detach.failed', { message: error && error.message });
+    return { scratch: null, confirmed: false };
+  }
+
+  // 它 persist 时会重写记录文件，等这个时间戳变一下就算卸载完了（一般几十毫秒，最多等 1.2 秒）
+  for (let i = 0; i < 10; i += 1) {
+    if (mtimeOf(record) !== before) break;
+    await new Promise((resolve) => setTimeout(resolve, 120));
+  }
+  const confirmed = mtimeOf(record) !== before;
+  log.write('cph.detach', { file: record, changed: confirmed });
+  return { scratch, confirmed };
+}
+
+/** 关掉我们临时开的空白文档（按标签页找，别误关用户自己的） */
+async function closeScratchEditor(doc) {
+  if (!doc || !doc.uri || !vscode.window.tabGroups) return;
+  const want = doc.uri.toString();
+  for (const group of vscode.window.tabGroups.all) {
+    for (const tab of group.tabs || []) {
+      const uri = tab && tab.input && tab.input.uri;
+      if (uri && uri.scheme === 'untitled' && uri.toString() === want) {
+        await vscode.window.tabGroups.close(tab, true);
+        return;
+      }
+    }
+  }
+}
+
+/**
+ * 把样例按 Competitive Companion 的协议 POST 给 CPH / CPH-NG。
+ *
+ * CPH-NG 支持「指定源文件」：把绝对路径塞进 URL 片段，由我们随扩展带的路径脚本取出来，
+ * 于是可以新建指定语言的源文件、或者直接挂到当前打开的文件上（文件已存在时它不会覆盖）。
+ *
+ * @returns {Promise<boolean>} 是否真的发出去了
+ */
+async function pushSamplesToCph(problem) {
+  const target = findCphExtension();
+  if (!target) {
+    vscode.window
+      .showWarningMessage('没检测到 CPH / CPH-NG 扩展，样例没地方送。', '我这就去装 CPH-NG')
+      .then((choice) => {
+        if (choice) {
+          openExternal('https://marketplace.visualstudio.com/items?itemName=langningchen.cph-ng');
+        }
+      });
+    return false;
+  }
+
+  const samples = Array.isArray(problem && problem.samples) ? problem.samples : [];
+  if (!samples.length) {
+    vscode.window.showInformationMessage(
+      `这道题的题面里没找到样例（交互题、或者样例是图片）——${target.label} 那边就没东西可填。`
+    );
+    return false;
+  }
+
+  const choice = await chooseCphTarget(problem, target);
+  if (!choice) return false;
+
+  let payload = cphLib.buildCompanionPayload(problem, samples);
+  let targetFile = '';
+  if (choice.mode === 'new' || choice.mode === 'current') {
+    const ready = await ensureCphPathScript();
+    if (!ready.ok) {
+      const why =
+        ready.reason === 'custom'
+          ? `你给 ${target.label} 设了自己的路径脚本，它不认「指定文件」这件事`
+          : `没能接管 ${target.label} 的路径脚本`;
+      vscode.window.showWarningMessage(`${why}，这次还是让它自己决定文件放哪。`);
+      choice.mode = 'auto';
+    } else {
+      targetFile = choice.file;
+    }
+  }
+  if (targetFile) payload = cphLib.withTargetFile(payload, targetFile);
+
+  const port = cphPortOf(target);
+  const existed = targetFile ? fsLib.existsSync(targetFile) : false;
+  // 这个文件在 CPH-NG 里已经有题、而且正是它当前打开的那份：内存里那道旧题会把我们写进去的盖住，
+  // 先切走让它存盘卸载（目标文件没被 CPH-NG 当成当前题时不用折腾）
+  const record = targetFile ? cphRecordPath(targetFile) : '';
+  const replacing =
+    !!record && fsLib.existsSync(record) && sameFile(codeFilePath(), targetFile);
+  const detach = replacing ? await detachCphActiveProblem(targetFile, record) : null;
+  const scratch = detach ? detach.scratch : null;
+  const detached = !!(detach && detach.confirmed);
+
+  const result = await cphLib.postProblem(payload, { port });
+  if (scratch) await closeScratchEditor(scratch);
+
+  log.write('cph.send', {
+    key: problem && problem.key,
+    target: target.kind,
+    port,
+    tests: samples.length,
+    mode: choice.mode,
+    file: targetFile,
+    replaced: replacing,
+    ok: result.ok,
+    status: result.status,
+    error: result.error ? result.error.code || result.error.message : '',
+  });
+
+  if (result.ok) {
+    if (!targetFile) {
+      vscode.window.showInformationMessage(
+        `已把 ${samples.length} 组样例发给 ${target.label}：它会新建一道「${payload.name}」的题目并打开源文件。`
+      );
+      return true;
+    }
+    const name = baseNameOf(targetFile);
+    if (existed) {
+      if (replacing && !detached) {
+        vscode.window.showWarningMessage(
+          `样例已经写进 ${name} 的记录，但 ${target.label} 可能还在用它内存里的旧题（它的题目缓存不跟着文件刷新）。` +
+            `在 ${target.label} 侧边栏把这道题删掉，再点一次传送就行。`
+        );
+        return true;
+      }
+      vscode.window.showInformationMessage(
+        replacing
+          ? `已把 ${samples.length} 组样例重挂到 ${name}（这道题在 ${target.label} 里原有的样例被换掉了）：侧边栏现在就是这道题。`
+          : `已把 ${samples.length} 组样例挂到 ${name}：${target.label} 里打开这个文件就能看到测试样例。`
+      );
+      return true;
+    }
+    if (await waitForFile(targetFile, 4000)) {
+      vscode.window.showInformationMessage(`已把 ${samples.length} 组样例发给 ${target.label}：新建了 ${targetFile}`);
+      return true;
+    }
+    vscode.window
+      .showWarningMessage(
+        `样例发出去了，但没在 ${targetFile} 看到文件——${target.label} 的路径脚本可能没生效（它会退回到自己建 .cpp）。`,
+        '检查设置'
+      )
+      .then((pick) => {
+        if (pick) vscode.commands.executeCommand('workbench.action.openSettings', 'cph-ng.companion.customPathScript');
+      });
+    return true;
+  }
+
+  const reason =
+    result.error && result.error.code === 'ECONNREFUSED'
+      ? `127.0.0.1:${port} 上没人监听——先在侧边栏点开一次 ${target.label}，让它把接收端启动起来（同一端口只能被一个窗口占用）。`
+      : result.error
+        ? `连接失败：${result.error.message}`
+        : `HTTP ${result.status}`;
+  vscode.window.showWarningMessage(`发送样例到 ${target.label} 失败：${reason}`, '复制诊断信息').then((pick) => {
+    if (!pick) return;
+    const text = JSON.stringify(
+      {
+        target: target.id,
+        port,
+        mode: choice.mode,
+        file: targetFile,
+        status: result.status,
+        error: result.error ? result.error.message : '',
+        body: result.body || '',
+        payloadPreview: { name: payload.name, url: payload.url, tests: payload.tests.map((t) => t.input.length) },
+      },
+      null,
+      2
+    );
+    vscode.env.clipboard.writeText(text);
+  });
+  return false;
+}
+
+/* ------------------------------------------------------------------ */
 /* 面板                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -138,6 +605,7 @@ async function renderProblemPanel(key, options = {}) {
   const problemNum = options.problemNum ? String(options.problemNum).toUpperCase() : '';
   const contestEnd = Number(options.contestEnd) || 0;
   const contestEnded = !!contestId && !!contestEnd && Date.now() > contestEnd;
+  const cphTarget = findCphExtension();
   const view = renderProblem(problem, {
     isFavorite,
     contestId,
@@ -145,6 +613,7 @@ async function renderProblemPanel(key, options = {}) {
     contestTitle: options.contestTitle || '',
     contestEnded,
     contestEnd,
+    cph: cphTarget ? { label: cphTarget.label } : null,
   });
 
   currentProblem = {
@@ -275,6 +744,9 @@ function handleProblemMessage(msg, problem, options = {}) {
       break;
     case 'contest':
       if (options.contestId) showContest(options.contestId).catch(handleError);
+      break;
+    case 'cph':
+      pushSamplesToCph(problem).catch(handleError);
       break;
     case 'version':
       pickProblemVersion(problem, options).catch(handleError);
@@ -502,6 +974,9 @@ async function showContest(id, options = {}) {
     }
   };
 
+  /** 发评论中：连点「发表」时挡住重复提交（同一时间只允许一条） */
+  let discussSending = false;
+
   panel = showPanel(appContext, 'contest', {
     ...view,
     enableMathJax: false,
@@ -535,6 +1010,8 @@ async function showContest(id, options = {}) {
           panel.webview.postMessage({ type: 'toast', text: '先写点内容' });
           return undefined;
         }
+        if (discussSending) return undefined;
+        discussSending = true;
         return vscode.window.withProgress(
           { location: vscode.ProgressLocation.Window, title: '正在发表…' },
           async () => {
@@ -549,6 +1026,9 @@ async function showContest(id, options = {}) {
               vscode.window.setStatusBarMessage('评论已发表', 2500);
             } catch (err) {
               panel.webview.postMessage({ type: 'toast', text: err.message });
+            } finally {
+              discussSending = false;
+              panel.webview.postMessage({ type: 'discussSendDone' });
             }
           }
         );
@@ -664,6 +1144,8 @@ async function showMessages(options = {}) {
   const view = renderMessage({ contacts, me, activeId, conversation, conversationError, error, url });
 
   let panel = null;
+  /** 正在发送中的会话：webview 连点「发送」/ 反复 Ctrl+Enter 时挡住重复提交 */
+  const pmSending = new Set();
 
   const contactOf = (id) => contacts.find((c) => String(c.id) === String(id)) || {};
 
@@ -716,6 +1198,12 @@ async function showMessages(options = {}) {
           panel.webview.postMessage({ type: 'toast', text: '消息不能为空' });
           return undefined;
         }
+        // 同一个会话同时只允许一条在飞：连点按钮会连着发同一段话，多出来的直接丢掉
+        if (pmSending.has(contactId)) {
+          panel.webview.postMessage({ type: 'toast', text: '上一条还在发送，稍等一下' });
+          return undefined;
+        }
+        pmSending.add(contactId);
         return (async () => {
           try {
             await client.sendMessage(contactId, content);
@@ -723,6 +1211,10 @@ async function showMessages(options = {}) {
             await loadConversation(contactId, 0);
           } catch (err) {
             panel.webview.postMessage({ type: 'toast', text: err.message });
+          } finally {
+            pmSending.delete(contactId);
+            // 让前端把「发送中…」的按钮恢复（成功时会整体重绘，这条只是兜住失败/被挡的情况）
+            panel.webview.postMessage({ type: 'pmSendDone', contactId });
           }
         })();
       }
@@ -2249,6 +2741,17 @@ const commands = {
     await openExternal(lastSolutionUrl);
   }),
 
+  /** 把当前题目的样例送进 CPH / CPH-NG（没装就提示去装） */
+  sendSamplesToCph: wrap(async () => {
+    const key = currentProblem && currentProblem.key;
+    if (!key) {
+      vscode.window.showInformationMessage('请先打开一道 VJudge 题目，再传送样例。');
+      return;
+    }
+    const problem = await withProgress(`正在准备 ${key} 的样例…`, () => client.fetchProblem(key));
+    await pushSamplesToCph(problem);
+  }),
+
   /** 我的提交记录：服务端会给源码文本，能直接在面板里看 / 复制 */
   mySubmissions: wrap(async () => {
     await showSubmissions({ scope: 'mine' });
@@ -2458,6 +2961,7 @@ const commands = {
       { label: '$(lightbulb) 随机来一道题…', command: 'vjudgeHelper.openRandomProblem' },
       { label: '$(cloud-upload) 提交当前文件代码', command: 'vjudgeHelper.submitCode', description: '提交到当前正在看的题目（比赛题会自动交进比赛）' },
       { label: '$(cloud-upload) 提交到指定题目…', command: 'vjudgeHelper.submitToProblem' },
+      { label: '$(zap) 传送样例至 CPH / CPH-NG', command: 'vjudgeHelper.sendSamplesToCph', description: '把样例塞进 CPH，本地对拍用' },
       { label: '$(account) 登录 / 更新凭据', command: 'vjudgeHelper.login' },
       { label: '$(check) 检查登录状态', command: 'vjudgeHelper.checkLogin' },
       { label: '$(refresh) 刷新侧边栏', command: 'vjudgeHelper.refresh' },

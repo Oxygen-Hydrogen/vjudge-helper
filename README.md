@@ -37,17 +37,32 @@
 
 第一次提交会问你用哪门语言（列表按文件类型排序，推荐项排第一）；想每次都确认题目和语言，把 `vjudgeHelper.submitConfirm` 打开即可。
 
-### 3. 打开 VJudge 链接
+### 3. 样例一键传送至 CPH / CPH-NG
+
+题面里的样例不用再一个个复制到本地。装了 [CPH](https://marketplace.visualstudio.com/items?itemName=DivyanshuAgrawal.competitive-programming-helper) 或 [CPH-NG](https://marketplace.visualstudio.com/items?itemName=langningchen.cph-ng) 的话，题面面板会多一个「传送样例至 CPH」按钮：
+
+- 点一下先问你**样例挂到哪个文件**（第一项就是回车默认）：用**当前文件**——跟 `Ctrl+Alt+Enter` 提交的是同一个源文件，样例挂上去、内容一个字都不动；或者新建一个源文件（顺带选语言：C++ / C / Python / Java / Rust / JavaScript，文件建在当前文件旁边）；或者让 CPH-NG 按它默认的规矩来。这道题的全部样例（连同题名、题号、来源链接、时限、内存）都会进 CPH 的题目列表，接着 `Ctrl+Alt+B` 就能跑
+- 不想每次都被问：`vjudgeHelper.cphFileMode` 设成 `new` / `current` / `auto`，`vjudgeHelper.cphLanguage` 直接指定语言（上次选过的语言也会记住并排在第一个）
+- **装了哪个就用哪个**：优先 CPH-NG，其次 CPH；两个都没装按钮就不会出现（不会出现点了没反应的情况）。命令面板里也有 `VJudge: 把样例传送到 CPH / CPH-NG`，按当前正在看的题目发
+- **走的是公开协议**，不碰它们的内部存储：`POST http://127.0.0.1:27121/` + Competitive Companion 的 JSON。所以 CPH 换版本、换数据格式都不影响；CPH-NG 改过端口会自动跟着 `cph-ng.companion.listenPort` 走，也能用自己的 `vjudgeHelper.cphPort` 覆盖
+- 「指定文件」是借 CPH-NG 自己的扩展点实现的：它在导入前会执行 `cph-ng.companion.customPathScript` 决定源文件放哪，我们把目标路径放在题目 URL 片段里，由随扩展带的 `res/cph-ng-path.js` 取出来（没有标记时它就是默认脚本的老行为）。第一次会把这个设置指过去，**只在它还是默认值时才自动改**；你自己写过路径脚本的话会先问你，不同意就退回「让 CPH 自己决定」
+- 样例是从题面里**现解析**出来的，规则对着 Competitive Companion 自己的 VJudge 解析器来：`table.vjudge_sample` 是主路径，没有表就找 `pre`、等宽 `div > b`、Courier `span`（真实题面里都出现过）；能认出 Input/Output/样例输入这类标签就按标签配，认不出就两两顺序配。实体、`<br>` 换行、行尾空白都会处理干净，「输入格式」里的代码块不会被误当成样例
+- 端口不通（扩展没启动 / 被同一个机器上的另一个窗口占着）会直接说清原因，并把诊断信息复制到剪贴板
+- 这个文件在 CPH-NG 里**已经建过题**时，会先把那道题从它的内存缓存里卸掉再重挂（做法是短暂切到别的标签页让它存盘，CPH-NG 随后会自己打开你的文件）——因为 CPH-NG 只认内存里那道旧题，直接导进去它看不见。原有的样例会被题面里的替换，选择框里会写明
+
+> CPH 那边的「题目」是按**源文件路径**记的：用当前文件时样例就挂在这个文件上，之后接着写、接着跑都不用再传；新建文件时 CPH-NG 会建好文件并打开它（内容空着，除非你给自己配了 `cph-ng.problem.templateFile`）。目标文件最好放在当前工作区里面，CPH-NG 的题目数据默认存在 `<工作区>/.cph-ng/` 下。
+
+### 4. 打开 VJudge 链接
 
 命令面板里所有入口都在 `VJudge:` 分类下，可以直接把链接丢进去。
 
-### 4. 读文章 / 题单
+### 5. 读文章 / 题单
 
 - 输入文章 ID 或链接（如 `https://vjudge.net/article/1`）即可在面板里阅读
 - 文章里的 `[problem:POJ-1000]` 会被渲染成可点击链接，点一下直接看题
 - 题单类文章会额外列出全部题目和 AC/提交数
 
-### 5. 逛比赛
+### 6. 逛比赛
 
 - 侧边栏实时显示「进行中 / 即将开始」和「最近的比赛」
 - 比赛详情面板显示时间、状态、比赛类型、当前权限、题目列表（公开比赛未登录也能看；私有比赛需要登录且已报名）
@@ -59,14 +74,14 @@
 - **比赛讨论区**：面板底部直接读这场比赛的讨论帖（按回复关系嵌套），能回复、能发新帖、能删自己的帖；刷新只换帖子列表，不会把写了一半的内容清掉
 - 从比赛题目进入题面后，面板上有「返回比赛」按钮，回去继续看榜
 
-### 6. 看团队（Group）
+### 7. 看团队（Group）
 
 - 侧边栏新增 **「我的团队」** 和 **「发现团队」**：加入的团队、收到的邀请、公开团队都会列出来
 - `VJudge: 打开团队…` 支持三种输入：团队链接 `https://vjudge.net/group/sfera-pg`、团队短名 `sfera-pg`、甚至团队中文/英文名（会自动走搜索）
 - `VJudge: 搜索团队…` 按关键词搜索后，从列表里挑一个打开
 - 团队面板里能看到：团队简介（Markdown 渲染）、成员列表与角色（队长/管理员/成员）、团队比赛（点一下直接开比赛面板）、团队文章（点一下直接看文章）
 
-### 7. 随机来一道题（可选 OJ / 难度 / 标签）
+### 8. 随机来一道题（可选 OJ / 难度 / 标签）
 
 `VJudge: 随机来一道题（可选 OJ / 难度 / 标签）` 会先问范围，再抽一道打开：
 
@@ -86,7 +101,7 @@
 选题这一步：Codeforces / 洛谷 走的是 **各自站点的公开接口**（CF 官方 API 带 rating 和标签，洛谷题目列表带难度、`tag=` 过滤），
 不占用 VJudge 的请求；**打开题面仍然需要登录**，没登录时会先提示你去登录。
 
-### 8. 提交记录（自己的源码 / 别人的图片）
+### 9. 提交记录（自己的源码 / 别人的图片）
 
 `VJudge: 我的提交记录（看源码）` 打开一个提交记录面板：
 
@@ -104,7 +119,7 @@ data URI 直接显示在面板里（webview 不依赖跨站 Cookie，也不受 C
 
 看到 `codeAccessInfo` 就是没权限（没登录 / 作者关掉了），面板会直接说原因。
 
-### 9. 顺手的小功能
+### 10. 顺手的小功能
 
 - 收藏题目 / 文章，最近浏览历史
 - 状态栏常驻入口，点一下弹出快捷菜单
@@ -180,6 +195,7 @@ VJudge 的题目描述必须登录后才能访问，所以第一次用需要配�
 | `VJudge: 提交当前文件代码` | 把编辑器里的代码提交到当前题目（比赛题自动投进比赛），快捷键 `Ctrl+Alt+Enter`（macOS `Cmd+Alt+Enter`） |
 | `VJudge: 提交到指定题目…` | 强制先选题目再提交，用来交手边没打开的题 |
 | `VJudge: 打开最近一次提交` | 打开上一次提交的评测记录页 |
+| `VJudge: 把样例传送到 CPH / CPH-NG` | 把当前题目的样例发给 CPH / CPH-NG：先选新建源文件（含语言）还是用当前文件（没装会提示去装） |
 | `VJudge: 我的提交记录（看源码）` | 面板里列自己的提交，点一行看源码（高亮 + 复制），可切「全部」看别人的（VJudge 只给图片） |
 | `VJudge: 全站提交记录（可按用户/题目筛）` | 全站提交列表，默认就是「全部」 |
 | `VJudge: 查看提交日志（排查提交到哪条通道）` | 每次提交走的通道、服务端原始响应都在这里 |
@@ -212,6 +228,9 @@ VJudge 的题目描述必须登录后才能访问，所以第一次用需要配�
 | `vjudgeHelper.submitConfirm` | `false` | 提交前弹窗确认题目、语言、文件名；默认关，记住语言后一次按键就提交 |
 | `vjudgeHelper.judgeTimeout` | `120` | 等评测结果的最长秒数；超时只是不再等，提交本身已生效 |
 | `vjudgeHelper.standingsInterval` | `5` | 比赛面板榜单的自动刷新间隔（秒），`0` = 不自动刷新；面板在后台时不发请求，比赛结束后自动降到 60 秒 |
+| `vjudgeHelper.cphPort` | `0`（自动） | 传送样例用的本地端口；`0` = 装了 CPH-NG 就跟它的 `cph-ng.companion.listenPort`，否则用 `27121` |
+| `vjudgeHelper.cphFileMode` | `ask` | 传送样例时挂到哪：`ask` 每次问 / `new` 新建源文件 / `current` 用当前文件（就是 `Ctrl+Alt+Enter` 提交的那个） / `auto` 让 CPH-NG 自己决定 |
+| `vjudgeHelper.cphLanguage` | `ask` | `cphFileMode` 为 `new` 时新建文件的语言：`ask`（每次问）、`cpp`、`c`、`py`、`java`、`rs`、`js` |
 
 ## 发布到 Marketplace
 
@@ -239,11 +258,13 @@ src/
   standings.js            榜单计算：AC / 罚时 / 封榜 / 部分分 / 排名
   markdown.js             迷你 Markdown 渲染器（支持 [problem:xxx]）
   highlight.js            代码块语法高亮（零依赖，C/C++/Java/Python/Pascal…）
+  cph.js                  样例抽取 + Competitive Companion 报文 + 投递给 CPH / CPH-NG
   util.js                 输入解析、OJ 链接转换、时间格式化
   store.js                收藏与历史（globalState）
   explorer.js             侧边栏树
   webview/shell.js        Webview 外壳（CSP / 主题 / MathJax）
   webview/renderers.js    题面 / 文章 / 比赛 / 团队 / 私信 / 提交记录六种视图
+res/cph-ng-path.js        给 CPH-NG 的路径脚本：决定样例挂到哪个源文件（可在设置里被接管）
 media/                    样式、前端脚本、活动栏图标
 test/                     不启动 VS Code 的联调脚本
 ```
@@ -358,6 +379,7 @@ node test/submit-check.js       # 提交逻辑自检 + 匿名接口探测；带 
 node test/mathjax-check.js      # 把注入面板的 MathJax 配置真正执行一遍（校验宏表与转义，不联网）
 node test/highlight-check.js    # 代码高亮：分词、转义、样例不误染、Markdown 围栏（不联网）
 node test/message-check.js      # 私信/讨论区接口与渲染 + 榜单「含补题」（打桩，不联网）
+node test/message-send-check.js # 私信/讨论区连点发送只发一条（无头 Edge 跑真实 DOM，没浏览器就跳过）
 node test/random-check.js       # 随机抽题：CF/洛谷/VJudge 三条通道 + 登录页与假总数踩坑（不联网）
 node test/random-flow-check.js  # 随机抽题的菜单流程：选 OJ → 选难度 → 选标签 → 记住条件（不联网）
 node test/status-check.js         # 提交记录：/status/data 参数、代码/图片/无权限三条分支（不联网）

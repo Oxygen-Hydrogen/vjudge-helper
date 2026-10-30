@@ -2,7 +2,7 @@
   "name": "vjudge-helper",
   "displayName": "VJudge Helper",
   "description": "在 VS Code 中一键查看 VJudge 题面、一键提交本地代码并跟踪评测结果，还能打开题目链接、阅读文章、浏览比赛与团队",
-  "version": "1.7.0",
+  "version": "1.8.3",
   "publisher": "HydrogenOxygen",
   "license": "MIT",
   "repository": {
@@ -127,6 +127,12 @@
         "title": "打开最近一次提交",
         "category": "VJudge",
         "icon": "$(history)"
+      },
+      {
+        "command": "vjudgeHelper.sendSamplesToCph",
+        "title": "把样例传送到 CPH / CPH-NG",
+        "category": "VJudge",
+        "icon": "$(zap)"
       },
       {
         "command": "vjudgeHelper.mySubmissions",
@@ -374,6 +380,53 @@
           "minimum": 0,
           "maximum": 120,
           "description": "比赛面板的榜单自动刷新间隔（秒）。0 表示不自动刷新；面板切到后台时不会发请求，比赛结束后自动降到 60 秒。"
+        },
+        "vjudgeHelper.cphPort": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "maximum": 65535,
+          "description": "「传送样例至 CPH / CPH-NG」用的本地端口。0 = 自动：装了 CPH-NG 就跟着它的 cph-ng.companion.listenPort，否则用 27121（两个扩展的默认端口）。"
+        },
+        "vjudgeHelper.cphFileMode": {
+          "type": "string",
+          "enum": [
+            "ask",
+            "new",
+            "current",
+            "auto"
+          ],
+          "enumDescriptions": [
+            "每次传送前问一句：用当前文件 / 新建源文件（可选语言）/ 让 CPH 自己决定",
+            "总是新建一个源文件（语言取 cphLanguage，没设就每次问）",
+            "总是挂到「当前文件」上（就是 Ctrl+Alt+Enter 提交的那个文件；没有可用的代码文件时退回到选择）",
+            "总是让 CPH-NG 按它自己的路径脚本决定（默认是工作区里的 .cpp）"
+          ],
+          "default": "ask",
+          "description": "「传送样例」时样例挂到哪个源文件上。选 new / current 需要让 VJudge Helper 接管 CPH-NG 的路径脚本（cph-ng.companion.customPathScript），第一次会征得你同意。"
+        },
+        "vjudgeHelper.cphLanguage": {
+          "type": "string",
+          "enum": [
+            "ask",
+            "cpp",
+            "c",
+            "py",
+            "java",
+            "rs",
+            "js"
+          ],
+          "enumDescriptions": [
+            "每次问",
+            "C++（.cpp）",
+            "C（.c）",
+            "Python（.py）",
+            "Java（.java）",
+            "Rust（.rs）",
+            "JavaScript（.js）"
+          ],
+          "default": "ask",
+          "description": "cphFileMode 为 new 时新建源文件的语言；ask = 每次弹选择框（上次用过的语言会排在第一个）。"
         }
       }
     }
@@ -385,10 +438,12 @@
     "test:flow": "node test/submit-flow-check.js",
     "test:contest": "node test/contest-panel-check.js",
     "test:standings": "node test/standings-check.js",
+    "test:cph": "node test/cph-check.js && node test/cph-path-check.js",
     "icon": "python scripts/make-icon.py",
     "package": "npx --yes @vscode/vsce package --no-dependencies",
     "publisher": "node scripts/set-publisher.js",
-    "publish": "node scripts/publish.js"
+    "publish": "node scripts/publish.js",
+    "test:cph-path": "node test/cph-path-check.js"
   },
   "devDependencies": {}
 }

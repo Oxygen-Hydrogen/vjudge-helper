@@ -1,5 +1,174 @@
 # Changelog
 
+## 1.8.3
+
+### 修：样例其实写进去了，但 CPH-NG 里看不见
+
+现象：`用当前文件` 发出去，CPH-NG 侧边栏还是那道旧题、样例空空，状态栏却提示成功。
+
+原因是 CPH-NG 的导入流程：先 `problemService.save(新题)` 写记录文件，再
+`repo.loadByPath(源文件)` 去取这道题的活对象——而它**先在内存里按 `src.path` 找**
+（`getByPath` → `problem.isRelated()`），命中就直接返回内存里那道旧题，磁盘上刚写的
+新题根本不读。旧题正是「当前打开的这个文件」那道，所以必然命中。结果 `.cph-ng/<文件>.bin`
+里样例是齐的，界面却还是旧题（日志里能对上：`Saved problem …` 之后推给 webview 的仍是旧
+`problemId`）。
+
+修法：发之前先**让 CPH-NG 把旧题从内存里卸掉**——切一下活动文本编辑器会触发它的
+`onActiveEditorChanged()`（先 `persist(旧题)` 存盘，再从 `backgroundProblems` 删除）。
+切换后会盯着记录文件的 mtime 变化确认真的存了（最多 1.2 秒），再发导入，它这次就会从磁盘
+读到新记录。发送完 CPH-NG 会自己打开目标文件，用户回到原来的地方（没有别的标签页时会临时开
+一个空白文档，发完关掉）。
+
+- 只在「目标文件已有 CPH-NG 题目记录、而且就是它当前这份」时才做这套切换，别的情况下照旧直接发
+- 选择框里会提示「CPH-NG 里已有这道题，样例会被换成题面里的」，避免悄悄换掉手工加的样例
+- 顺带把 CPH-NG 记录路径的推算抽成 `cph.recordPathFor()`（`<工作区>/.cph-ng/<相对路径>.bin`），
+  自检里覆盖根目录、子目录、不在工作区三种情况
+
+## 1.8.2
+
+### 修：「用当前文件」认的就是 `Ctrl+Alt+Enter` 提交的那份
+
+1.8.1 取「当前文件」用的是 `window.activeTextEditor`，可是**题面面板一拿到焦点它就成了
+`undefined`**——而「传送样例」这个按钮正好长在面板上。于是你写 `solution.cpp`、打开面板、
+点按钮，选择框里根本没有「用当前文件」这一项，只剩「新建」和「让 CPH-NG 自己决定」。
+现在和提交走同一个解析：活动编辑器 → 最近编辑过的文档（`currentCodeDocument()`），
+也就是 `Ctrl+Alt+Enter` 会提交的那个文件。
+
+- 「用当前文件」排到选择框**第一项**，回车就挂上去；标题里写明「就是 Ctrl+Alt+Enter
+  提交的那个文件」，不用再猜是哪一个
+- 新建源文件的落点也改成这份代码所在的目录（面板拿焦点时不会掉到工作区根目录去）
+- 未命名缓冲区（`untitled:`）、`git:` / `output:` 这类虚拟文档、已经关掉的文档一律不算
+  「当前文件」——CPH-NG 要的是磁盘上真实存在的路径，判断抽到了
+  `cph.filePathOfDocument()`，自检里有覆盖
+
+## 1.8.1
+
+### 修：传送样例前先问「建新文件还是用当前文件」
+
+1.8.0 是直接把题丢给 CPH-NG，文件放哪、什么语言全由它决定：CPH-NG 的默认路径脚本
+写死 `<工作区>/<题名>.cpp`，于是「我自己写的是 `solution.py`」或者「我文件已经开着了」这两种
+最常见的情况都很别扭——它总会另起一个 `.cpp`。现在点按钮先弹一个选择框：
+
+- **新建一个源文件** —— 接着选语言（C++ / C / Python / Java / Rust / JavaScript），
+  文件建在当前文件旁边（没有打开的文件就放工作区根目录）。语言会记住，下次排第一个。
+- **用当前文件：`xxx.cpp`** —— 样例直接挂到正在编辑的文件上，**不会覆盖内容**，
+  CPH-NG 里打开它就能看到样例、直接跑。
+- **让 CPH-NG 自己决定** —— 1.8.0 的老行为，按它的默认脚本建 `.cpp`。
+
+不想每次都被问，可以用新设置 `vjudgeHelper.cphFileMode`（`ask` / `new` / `current` / `auto`）
+和 `vjudgeHelper.cphLanguage`（`ask` 或直接指定 `cpp` `c` `py` `java` `rs` `js`）。
+
+### 怎么做到的（没碰它们的内部存储）
+
+CPH-NG 的路由器只认 Competitive Companion 的报文，但它在导入前会执行
+`cph-ng.companion.customPathScript` 决定源文件放在哪，而且**目标文件已存在时它不覆盖、
+只把样例挂上去**。所以：
+
+- 新文件 `res/cph-ng-path.js`：一份给小沙箱用的路径脚本，从题目 URL 片段里的
+  `#__vjudge_file=<绝对路径>` 取出目标文件（顺手把标记从 URL 上抹掉，题目信息里不会留垃圾）；
+  没有标记时退回默认脚本的老行为（Codeforces / 洛谷 / QOJ / AtCoder 的短文件名，多个工作区会问一个），
+  所以浏览器里的 Competitive Companion 照样能用。
+- 第一次选「新建 / 当前文件」时会把这个设置指过去；**只在它还是默认值时才自动改**，
+  你自己写过路径脚本的话会先弹窗问一句，不同意就退回「让 CPH-NG 自己决定」，绝不动你的配置。
+- 发完会等最多 4 秒看文件到底有没有落地；没有就提示去检查这个设置（而不是假装成功）。
+
+### 测试
+
+- 新增 `test/cph-path-check.js`：语言表（`.cc/.cxx` 也算 C++、不认识的扩展名返回 null）、
+  文件名与 URL 标记（中文 / 空格 / 反斜杠往返、丢掉原有 `#片段`、不改原对象），
+  以及**真的把路径脚本丢进 `vm` 沙箱跑一遍**（复刻 CPH-NG 的包装与上下文：只给
+  problems / workspaceFolders / ui / utils / logger / path / fs.existsSync），
+  覆盖标记命中、认不出 URL 的兜底、多工作区询问、零工作区返回 null、一次多道题。
+- 实测两种模式都对着本机运行中的 CPH-NG 走过一遍：新建 `传送 测试_A.py` 成功落盘
+  （中文、空格、工程路径里的不可见字符都没问题），对一个已有内容的文件再发一次，
+  文件内容原样保留、样例挂上去。
+
+## 1.8.0
+
+### 新增：样例一键传送至 CPH / CPH-NG
+
+题面面板右上角多了一个「传送样例至 CPH」。前提是窗口里装了
+[CPH](https://marketplace.visualstudio.com/items?itemName=DivyanshuAgrawal.competitive-programming-helper)
+或 [CPH-NG](https://marketplace.visualstudio.com/items?itemName=langningchen.cph-ng)
+（装了哪个就用哪个，CPH-NG 优先）；**一个都没装就不显示这个按钮**，不会出现点了没反应的情况。
+命令面板里也有 `VJudge: 把样例传送到 CPH / CPH-NG`，按当前正在看的题目发。
+
+发送走的是 CPH 系公开的接收端，也就是 Competitive Companion 的那套协议：
+
+    POST http://127.0.0.1:27121/
+    X-Competitive-Companion: true
+    { name, group, url, tests: [{input, output}], batch: {id, size: 1}, timeLimit, memoryLimit … }
+
+- 好处是**不碰它们的内部存储**（`.prob` 文件命名、webview 状态都是私有实现），CPH 换版本也不受影响。
+- 端口：默认 27121；装了 CPH-NG 会跟着它的 `cph-ng.companion.listenPort` 走，也可以用新设置
+  `vjudgeHelper.cphPort` 覆盖（同一个端口只能被一个窗口占用）。
+- 发送的题目带了题名、题号、来源链接、时限、内存；`batch.size = 1` 是 CPH-NG 的路由器「立刻自动导入」的条件。
+
+样例是**从题面里现解析**的（新文件 `src/cph.js`），解析规则对齐 Competitive Companion
+自己的 `VirtualJudgeProblemParser`（它用的选择器和「两个一组」的配对方式就是真实题面的形状）：
+
+- 主路径 `.vjudge_sample pre`；没有样例表时依次找 `pre`、`div[style="font-family:Monospace, Courier;"] > b`、
+  `span[style='font-family:"Courier New"']`（这三种写法在真实题面里都出现过）。
+- 配对：能认出「Input / Output / 样例输入 / 输出 #1」这类标签就按标签配，认不出就两两顺序配——
+  但只在「前面提到过样例 / Sample」「块本身带标签」「块在样例表里」三者之一成立时才顺序配，
+  免得把「输入格式」「输出格式」里的代码块当成一组样例。
+- 文本处理：`<br>` 换行、`&lt;`/`&amp;`/`&quot;` 还原、行尾空白剪掉（不然 CPH 里看着一样、对拍却 WA）；
+  `<pre>` 里再套 `<span>`/`<code>`/`<b>` 也能取出原文；「Input」「样例输出」这种纯标签块会被剔掉。
+- 多组样例会去重，交互题只有输入也能发；一组都没解析到就明说，不会发一道空题过去。
+
+失败时（端口没人监听 / 超时 / 非 2xx）直接说明原因，并提供「复制诊断信息」把端口、状态码、
+服务端响应体复制到剪贴板。
+
+### 测试
+
+- 新增 `test/cph-check.js`：17 项样例抽取（样例表、CF 风格、中文标题、等宽 div、Courier span、
+  实体与 `<br>`、多组重复、表头、"输入格式"不误判、交互题、单格挤一组）、报文结构（毫秒 / MB 单位换算、
+  文件名非法字符、`batch.size`），以及**真的起一个本地 HTTP 服务收一次 POST**（校验 method / path /
+  请求头 / body，外加端口不通与 500 两个失败分支）。
+- 实测：向本机运行中的 CPH-NG 路由器投递一次，返回 `200 {"status":"ok"}`，路由器日志显示 `Batch … dispatched`。
+
+## 1.7.2
+
+### 修复：私信连点「发送」会发出去好几条
+
+点一下只是把内容交给扩展，真正发出去要等一次网络往返（几百毫秒到几秒），
+这期间按钮一直可点，连点几次就一条一条全发出去了。现在两头都堵住：
+
+- **前端**：点下去立刻把按钮置灰、文案改成「发送中…」，并记 `data-busy`；
+  这期间再点（包括按 Ctrl+Enter）都直接忽略。发送结束（成功或失败）由扩展回一条
+  `pmSendDone` 把按钮复原，失败时输入框里的内容也还在，不用重打。
+- **扩展**：按会话加锁（`pmSending` Set），同一个人同一时刻只允许一条在飞，
+  重绘后按钮又变得可点、但上一条还没回来的情况会被挡下，并提示「上一条还在发送，稍等一下」。
+- 顺手修了同一个毛病的**讨论区发评论**（`discussSend`）：连点「发表」不会再刷出好几条评论；
+  它的按钮不在局部刷新的范围里，所以另有一条 `discussSendDone` 负责复原。
+- 空内容在前端就拦住了，不用再往返一次。
+
+### 测试
+
+- 新增 `test/message-send-check.js`：这类 bug 只在真实 DOM 里才复现，所以用
+  `renderers` 生成真面板 + 无头 Edge 加载 `panel.js`，脚本里连点 3 次按钮、再补一发
+  Ctrl+Enter，断言只发出 1 条、按钮被禁用、`pmSendDone` 后能复原再发。
+  机器上没有 Edge / Chrome 时自动跳过。
+
+## 1.7.1
+
+### 修复：私信 / 讨论区里的用户头像显示不出来
+
+之前这两处只画了一个彩色字母方块（代码里写着「站点头像带登录态，webview 加载会掉图」）。
+实测那个判断是错的：真实头像在 CDN 上，**匿名就能取**
+
+    https://cdn.vjudge.net.cn/user/avatar/<userId>
+
+（`/user` 页面的 `<img id="user_avatar">` 就是这个地址，不带 Cookie 直接 200 image/png）。
+所以现在正常显示头像：
+
+- 私信会话列表（26px）和会话头部（30px）都显示对方头像，数据从 `/message` 页里
+  `<li class="contact">` 的 `<img src>` 解析，相对路径按 `/util/cfg` 的 CDN 地址补全。
+- 讨论区帖子头像用 `authorId` 直接拼（`/comment/thread` 只给 id，不给地址）。
+- 没设置头像的用户 CDN 会 404，这时**自动退回原来那个彩色首字母**（`panel.js` 在捕获阶段
+  监听 `img` 的 error，把图摘掉），不会出现破图方块。
+- 图片用 `loading="lazy"` + `referrerpolicy="no-referrer"`，不会把本地路径泄露给 CDN。
+
 ## 1.7.0
 
 ### 新增：本地查看提交记录（自己的源码 / 别人的图片）
